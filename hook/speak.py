@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Stop hook: read Claude's last reply aloud with macOS `say` (fully offline).
 
-Voice: the one picked in the NotchVoice notch app (saved in ~/.claude/tts_voice), else $CLAUDE_TTS_VOICE
-(any name from `say -v '?'`), else the system Spoken Content voice (System Settings > Accessibility > Spoken Content).
-Rate: $CLAUDE_TTS_RATE (words/min).
-Mute: touch ~/.claude/tts_off   Unmute: rm ~/.claude/tts_off
-Music ducking: Spotify / Music drop to $CLAUDE_TTS_DUCK (default 0.5) of their volume while speaking.
+Settings come from ~/.claude/tts_settings.json, which the NotchVoice notch app writes:
+  voice  a voice for `say -v`, else $CLAUDE_TTS_VOICE, else the system Spoken Content voice
+  rate   words per minute, else $CLAUDE_TTS_RATE, else the voice's own rate
+  duck   how loud Spotify / Music stay while speaking, as a fraction of their volume, else $CLAUDE_TTS_DUCK, else 0.5
+Mute: touch ~/.claude/tts_off   Unmute: rm ~/.claude/tts_off   (NotchVoice samples set NOTCHVOICE_SAMPLE=1 and play anyway)
 """
 import json
 import os
@@ -17,7 +17,7 @@ import tempfile
 
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
-VOICE_FILE = os.path.join(HOME, ".claude", "tts_voice")
+SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(tempfile.gettempdir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(tempfile.gettempdir(), "claude_tts_duck.json")
@@ -60,12 +60,21 @@ def clean(text):
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def chosen_voice():
+def load_settings():
     try:
-        with open(VOICE_FILE) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+        with open(SETTINGS_FILE) as f:
+            settings = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def music_level(settings):
+    level = settings.get("duck", os.environ.get("CLAUDE_TTS_DUCK", "0.5"))
+    try:
+        return min(max(float(level), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return 0.5
 
 
 def read_owner():
@@ -113,11 +122,10 @@ def set_app_volume(app, volume):
     osascript(f'if application "{app}" is running then tell application "{app}" to set sound volume to {volume}')
 
 
-def duck_music():
+def duck_music(factor):
     # Keep the first saved volumes when a reply interrupts another, so the restore uses the real level.
     if os.path.exists(DUCK_FILE):
         return
-    factor = float(os.environ.get("CLAUDE_TTS_DUCK", "0.5"))
     original = {app: v for app in MUSIC_APPS if (v := app_volume(app)) is not None}
     with open(DUCK_FILE, "w") as f:
         json.dump(original, f)
@@ -137,7 +145,7 @@ def restore_music():
 
 
 def main():
-    if os.path.exists(MUTE_FILE):
+    if os.path.exists(MUTE_FILE) and not os.environ.get("NOTCHVOICE_SAMPLE"):
         return
     payload = json.load(sys.stdin)
     text = payload.get("last_assistant_message") or last_reply_from_transcript(
@@ -147,15 +155,17 @@ def main():
     if not text:
         return
 
+    settings = load_settings()
     cmd = ["say"]
-    voice = chosen_voice() or os.environ.get("CLAUDE_TTS_VOICE")
+    voice = settings.get("voice") or os.environ.get("CLAUDE_TTS_VOICE")
     if voice:
-        cmd += ["-v", voice]
-    if os.environ.get("CLAUDE_TTS_RATE"):
-        cmd += ["-r", os.environ["CLAUDE_TTS_RATE"]]
+        cmd += ["-v", str(voice)]
+    rate = settings.get("rate") or os.environ.get("CLAUDE_TTS_RATE")
+    if rate:
+        cmd += ["-r", str(rate)]
 
     take_over()
-    duck_music()
+    duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)

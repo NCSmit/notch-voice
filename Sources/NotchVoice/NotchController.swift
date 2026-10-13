@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 struct NotchMetrics: Equatable {
@@ -12,7 +13,7 @@ struct NotchMetrics: Equatable {
     static let glowMargin: CGFloat = 60
 
     var closedSize: CGSize { CGSize(width: notch.width + 2 * Self.closedTopRadius, height: notch.height) }
-    var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 92) }
+    var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 58) }
     var windowSize: CGSize { CGSize(width: openSize.width + 2 * Self.glowMargin, height: openSize.height + Self.glowMargin) }
 
     @MainActor
@@ -32,6 +33,7 @@ struct NotchMetrics: Equatable {
 @MainActor
 final class NotchState: ObservableObject {
     @Published var isOpen = false
+    @Published var isPreviewingGlow = false
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
@@ -47,13 +49,12 @@ final class NotchController {
     private var hoverStart: Date?
     private var leaveStart: Date?
     private var isMenuOpen = false
-    private var voiceMenu: VoiceMenu?
+    private var themeChanges: AnyCancellable?
+    private var glowPreview = 0
 
-    init(voice: VoiceController) {
+    init(voice: VoiceController, preferences: Preferences, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
-        let root = NotchRootView(state: state, voice: voice) { [weak self] anchor in
-            self?.showVoiceMenu(below: anchor)
-        }
+        let root = NotchRootView(state: state, voice: voice, preferences: preferences, openSettings: openSettings)
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
         panel.contentView = host
@@ -61,6 +62,9 @@ final class NotchController {
 
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             MainActor.assumeIsolated { self?.mouseMoved() }
+        }
+        themeChanges = preferences.$theme.dropFirst().removeDuplicates().sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.previewGlow() }
         }
         let center = NotificationCenter.default
         observers = [
@@ -150,14 +154,15 @@ final class NotchController {
         if !open { stopTracking() }
     }
 
-    private func showVoiceMenu(below anchor: CGRect) {
-        let point = NSPoint(x: panel.frame.minX + anchor.minX, y: panel.frame.maxY - anchor.maxY - 4)
-        let menu = VoiceMenu(selectedID: voice.voiceID) { [weak self] id in
-            self?.voice.setVoice(id)
-        }
-        voiceMenu = menu
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { menu.popUp(at: point) }
+    private func previewGlow() {
+        glowPreview += 1
+        let preview = glowPreview
+        state.isPreviewingGlow = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.glowPreview == preview else { return }
+                self.state.isPreviewingGlow = false
+            }
         }
     }
 

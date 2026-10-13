@@ -4,7 +4,8 @@ import SwiftUI
 struct NotchRootView: View {
     @ObservedObject var state: NotchState
     @ObservedObject var voice: VoiceController
-    let showVoiceMenu: @MainActor (CGRect) -> Void
+    @ObservedObject var preferences: Preferences
+    let openSettings: @MainActor () -> Void
 
     var body: some View {
         NotchView(
@@ -12,9 +13,10 @@ struct NotchRootView: View {
             isOpen: state.isOpen,
             isEnabled: voice.isEnabled,
             isSpeaking: voice.isSpeaking,
-            voiceName: voice.voiceName,
+            isGlowing: voice.isSpeaking || state.isPreviewingGlow,
+            theme: preferences.theme,
             setEnabled: voice.setEnabled,
-            showVoiceMenu: showVoiceMenu
+            openSettings: openSettings
         )
     }
 }
@@ -24,20 +26,22 @@ struct NotchView: View {
     let isOpen: Bool
     let isEnabled: Bool
     let isSpeaking: Bool
-    let voiceName: String
+    let isGlowing: Bool
+    let theme: GlowTheme
     let setEnabled: @MainActor (Bool) -> Void
-    let showVoiceMenu: @MainActor (CGRect) -> Void
+    let openSettings: @MainActor () -> Void
 
     var body: some View {
         let size = isOpen ? metrics.openSize : metrics.closedSize
         let topRadius = isOpen ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isOpen ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
-        let showsBody = isOpen || isSpeaking
+        let showsBody = isOpen || isGlowing
 
         ZStack(alignment: .top) {
             NotchGlow(
                 outline: NotchShape(topRadius: topRadius, bottomRadius: bottomRadius, isClosed: false),
-                isActive: isSpeaking
+                colors: theme.colors,
+                isActive: isGlowing
             )
             NotchShape(topRadius: topRadius, bottomRadius: bottomRadius)
                 .fill(.black)
@@ -48,15 +52,15 @@ struct NotchView: View {
                 VoicePanel(
                     isEnabled: isEnabled,
                     isSpeaking: isSpeaking,
-                    voiceName: voiceName,
+                    accent: theme.accent,
                     setEnabled: setEnabled,
-                    showVoiceMenu: showVoiceMenu
+                    openSettings: openSettings
                 )
-                    .padding(.top, metrics.notch.height)
-                    .transition(.asymmetric(
-                        insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
-                        removal: .opacity.animation(.easeIn(duration: 0.1))
-                    ))
+                .padding(.top, metrics.notch.height)
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
+                    removal: .opacity.animation(.easeIn(duration: 0.1))
+                ))
             }
         }
         .frame(width: size.width, height: size.height)
@@ -95,17 +99,6 @@ struct NotchShape: Shape {
 }
 
 enum Glow {
-    static let colors: [Color] = [
-        Color(red: 1.00, green: 0.56, blue: 0.36),
-        Color(red: 1.00, green: 0.77, blue: 0.47),
-        Color(red: 1.00, green: 0.45, blue: 0.62),
-        Color(red: 0.74, green: 0.52, blue: 1.00),
-        Color(red: 0.42, green: 0.64, blue: 1.00),
-        Color(red: 1.00, green: 0.56, blue: 0.36),
-    ]
-
-    static let accent = LinearGradient(colors: [colors[0], colors[2]], startPoint: .leading, endPoint: .trailing)
-
     static func level(at time: Double) -> Double {
         let breath = sin(time * 2 * .pi * 0.5)
         let chatter = sin(time * 2 * .pi * 2.6) * sin(time * 2 * .pi * 0.7 + 1.1)
@@ -115,6 +108,7 @@ enum Glow {
 
 struct NotchGlow: View {
     let outline: NotchShape
+    let colors: [Color]
     let isActive: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -123,7 +117,7 @@ struct NotchGlow: View {
             let time = context.date.timeIntervalSinceReferenceDate
             let level = reduceMotion ? 0.8 : Glow.level(at: time)
             let spin = reduceMotion ? 0 : (time * 45).truncatingRemainder(dividingBy: 360)
-            let gradient = AngularGradient(colors: Glow.colors, center: .center, angle: .degrees(spin))
+            let gradient = AngularGradient(colors: colors, center: .center, angle: .degrees(spin))
             ZStack {
                 outline
                     .stroke(gradient, style: StrokeStyle(lineWidth: 22 + 16 * level, lineCap: .round, lineJoin: .round))
@@ -146,85 +140,60 @@ struct NotchGlow: View {
 struct VoicePanel: View {
     let isEnabled: Bool
     let isSpeaking: Bool
-    let voiceName: String
+    let accent: LinearGradient
     let setEnabled: @MainActor (Bool) -> Void
-    let showVoiceMenu: @MainActor (CGRect) -> Void
-    @State private var voiceButtonFrame = CGRect.zero
+    let openSettings: @MainActor () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            toggleRow
-            voiceRow
+        HStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: isEnabled ? "waveform" : "waveform.slash")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(isEnabled ? AnyShapeStyle(accent) : AnyShapeStyle(Color.white.opacity(0.35)))
+                    .symbolEffect(.variableColor.iterative, isActive: isSpeaking)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Voice replies")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(status)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .contentTransition(.opacity)
+                }
+                Spacer(minLength: 8)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { setEnabled(!isEnabled) }
+            .accessibilityElement(children: .combine)
+
+            Button(action: openSettings) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Settings")
+
+            NotchSwitch(isOn: isEnabled, accent: accent)
+                .contentShape(Rectangle())
+                .onTapGesture { setEnabled(!isEnabled) }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Voice replies")
+                .accessibilityValue(isEnabled ? "On" : "Off")
+                .accessibilityAddTraits(.isToggle)
+                .accessibilityAction { setEnabled(!isEnabled) }
         }
         .padding(.horizontal, 22)
-        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contextMenu {
-            Toggle("Open at Login", isOn: Binding(get: { LoginItem.isEnabled }, set: { LoginItem.setEnabled($0) }))
+            Button("Settings…") { openSettings() }
             Divider()
             Button("Quit NotchVoice") { NSApp.terminate(nil) }
         }
-    }
-
-    private var toggleRow: some View {
-        HStack(spacing: 12) {
-            Image(systemName: isEnabled ? "waveform" : "waveform.slash")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(isEnabled ? AnyShapeStyle(Glow.accent) : AnyShapeStyle(Color.white.opacity(0.35)))
-                .symbolEffect(.variableColor.iterative, isActive: isSpeaking)
-                .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Voice replies")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text(status)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .contentTransition(.opacity)
-            }
-            Spacer(minLength: 8)
-            NotchSwitch(isOn: isEnabled)
-        }
-        .frame(height: 50)
-        .contentShape(Rectangle())
-        .onTapGesture { setEnabled(!isEnabled) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Voice replies")
-        .accessibilityValue(isEnabled ? "On" : "Off")
-        .accessibilityAddTraits(.isToggle)
-        .accessibilityAction { setEnabled(!isEnabled) }
-    }
-
-    private var voiceRow: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "person.wave.2")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.45))
-                .frame(width: 24)
-            Text("Voice")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
-            Spacer(minLength: 8)
-            HStack(spacing: 5) {
-                Text(voiceName)
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .frame(height: 24)
-            .background(Capsule().fill(Color.white.opacity(0.12)))
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { voiceButtonFrame = $0 }
-        }
-        .frame(height: 34)
-        .contentShape(Rectangle())
-        .onTapGesture { showVoiceMenu(voiceButtonFrame) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Voice")
-        .accessibilityValue(voiceName)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { showVoiceMenu(voiceButtonFrame) }
     }
 
     private var status: String {
@@ -235,11 +204,12 @@ struct VoicePanel: View {
 
 struct NotchSwitch: View {
     let isOn: Bool
+    let accent: LinearGradient
 
     var body: some View {
         ZStack(alignment: isOn ? .trailing : .leading) {
             Capsule().fill(Color.white.opacity(0.16))
-            Capsule().fill(Glow.accent).opacity(isOn ? 1 : 0)
+            Capsule().fill(accent).opacity(isOn ? 1 : 0)
             Circle()
                 .fill(.white)
                 .shadow(color: .black.opacity(0.3), radius: 1.5, y: 1)

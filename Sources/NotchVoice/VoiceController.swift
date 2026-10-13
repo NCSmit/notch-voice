@@ -6,23 +6,27 @@ private let log = Logger(subsystem: "local.notchvoice", category: "voice")
 
 @MainActor
 final class VoiceController: ObservableObject {
+    static let baseRate = 180.0
+
     @Published private(set) var isEnabled = true
     @Published private(set) var isSpeaking = false
     @Published private(set) var voiceID: String?
     @Published private(set) var voiceName = "System Voice"
+    @Published private(set) var speed = 1.0
+    @Published private(set) var musicVolume = 0.5
 
-    // The contract of ~/.claude/hooks/speak.py: it stays silent while the mute file exists, speaks with the
-    // voice identifier in the voice file (or the system voice without one), and writes "<hook pid> <say pid>"
-    // to the owner file for the reply it is reading out.
+    // The contract of ~/.claude/hooks/speak.py: it stays silent while the mute file exists, takes its voice, rate
+    // and music level from the settings file, and writes "<hook pid> <say pid>" to the owner file while it speaks.
     private let muteFile = URL.homeDirectory.appending(path: ".claude/tts_off")
-    private let voiceFile = URL.homeDirectory.appending(path: ".claude/tts_voice")
+    private let settingsFile = URL.homeDirectory.appending(path: ".claude/tts_settings.json")
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
-    private var preview: Process?
+    private var sample: Process?
 
     init() {
+        loadSettings()
         refresh()
         watchOwnerDirectory()
     }
@@ -37,55 +41,80 @@ final class VoiceController: ObservableObject {
     }
 
     func setVoice(_ id: String?) {
-        if let id {
-            try? id.write(to: voiceFile, atomically: true, encoding: .utf8)
-        } else {
-            try? FileManager.default.removeItem(at: voiceFile)
-        }
-        refresh()
-        playPreview()
+        voiceID = id
+        voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? "System Voice"
+        saveSettings()
+        playSample()
     }
 
-    func refresh() {
-        let enabled = !FileManager.default.fileExists(atPath: muteFile.path)
-        let pids = ownerPids()
-        let sayPid = pids.dropFirst().first.flatMap { Self.processName($0) == "say" ? $0 : nil }
-        if let sayPid, !enabled {
-            // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
-            kill(sayPid, SIGTERM)
-            log.info("stopped say \(sayPid) because voice replies are off")
-        }
-        if isEnabled != enabled { isEnabled = enabled }
-        let speaking = enabled && sayPid != nil
-        if isSpeaking != speaking {
-            isSpeaking = speaking
-            log.info("speaking: \(speaking)")
-        }
-        let voice = (try? String(contentsOf: voiceFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let id = voice?.isEmpty == false ? voice : nil
-        if voiceID != id {
-            voiceID = id
-            voiceName = id.flatMap(VoiceMenu.displayName(of:)) ?? "System Voice"
-        }
-        setPolling(pids.contains { Self.isAlive($0) })
+    func setSpeed(_ speed: Double) {
+        self.speed = speed
+        saveSettings()
     }
 
-    private func playPreview() {
+    func setMusicVolume(_ volume: Double) {
+        musicVolume = volume
+        saveSettings()
+    }
+
+    func loadSettings() {
+        let settings = (try? Data(contentsOf: settingsFile))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        let id = (settings["voice"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        voiceID = id
+        voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? "System Voice"
+        speed = (settings["rate"] as? Double).map { ($0 / Self.baseRate * 10).rounded() / 10 } ?? 1
+        musicVolume = settings["duck"] as? Double ?? 0.5
+    }
+
+    func playSample() {
         let name = voiceID.flatMap { AVSpeechSynthesisVoice(identifier: $0)?.name }
-        let text = name.map { "Hello! My name is \($0)." } ?? "This is the system voice."
+        let text = (name.map { "Hi, I'm \($0). " } ?? "Hi! ") + "This is how Claude's replies will sound."
         guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return }
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/env")
         process.arguments = ["python3", hookScript.path]
+        process.environment = ProcessInfo.processInfo.environment.merging(["NOTCHVOICE_SAMPLE": "1"]) { $1 }
         let input = Pipe()
         process.standardInput = input
         do {
             try process.run()
             input.fileHandleForWriting.write(payload)
             try input.fileHandleForWriting.close()
-            preview = process
+            sample = process
         } catch {
-            log.error("could not play the voice preview: \(error.localizedDescription)")
+            log.error("could not play a voice sample: \(error.localizedDescription)")
+        }
+    }
+
+    func refresh() {
+        let enabled = !FileManager.default.fileExists(atPath: muteFile.path)
+        let pids = ownerPids()
+        let sayPid = pids.dropFirst().first.flatMap { Self.processName($0) == "say" ? $0 : nil }
+        let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
+        if let sayPid, !enabled, !isSample {
+            // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
+            kill(sayPid, SIGTERM)
+            log.info("stopped say \(sayPid) because voice replies are off")
+        }
+        if isEnabled != enabled { isEnabled = enabled }
+        let speaking = sayPid != nil && (enabled || isSample)
+        if isSpeaking != speaking {
+            isSpeaking = speaking
+            log.info("speaking: \(speaking)")
+        }
+        setPolling(pids.contains { Self.isAlive($0) })
+    }
+
+    private func saveSettings() {
+        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume))]
+        if let voiceID { settings["voice"] = voiceID }
+        if abs(speed - 1) > 0.01 { settings["rate"] = Int((Self.baseRate * speed).rounded()) }
+        guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) else { return }
+        do {
+            try data.write(to: settingsFile, options: .atomic)
+        } catch {
+            log.error("could not save settings: \(error.localizedDescription)")
         }
     }
 

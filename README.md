@@ -21,7 +21,7 @@ Hear every Claude Code reply spoken aloud. The notch glows while Claude talks, a
 - **A notch that glows.** A soft, shifting glow surrounds the notch while Claude talks.
 - **Music steps aside.** Spotify and Apple Music get quieter while Claude speaks, then return to the volume they were at.
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off. Turning them off mid-sentence stops the speech straight away.
-- **Your choice of voice.** Pick any installed macOS voice and hear a short sample straight away.
+- **Settings in one click.** The cog next to the switch opens settings for the voice, speaking speed, music volume and glow theme.
 - **Stays out of the way.** No Dock icon and no menu bar item. It uses almost no CPU while idle, and it opens at login.
 
 <table>
@@ -34,6 +34,23 @@ Hear every Claude Code reply spoken aloud. The notch glows while Claude talks, a
     <td align="center"><b>Off with one click</b></td>
   </tr>
 </table>
+
+## Settings
+
+Click the cog in the notch to open settings. Changes apply to the next reply, with no restart needed.
+
+<p align="center">
+  <img src="docs/settings.png" alt="The NotchVoice settings window with voice, speed, music volume and glow theme controls" width="470">
+</p>
+
+- **Voice.** Choose any macOS voice installed on your Mac. You hear a short sample as soon as you pick one.
+- **Speed.** Set how fast replies are read, from 0.6× to 2×.
+- **Music volume.** Choose how loud Spotify and Apple Music stay while Claude speaks, from silent to unchanged.
+- **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
+
+<p align="center">
+  <img src="docs/themes.png" alt="The six glow themes around a notch: Aurora, Ember, Ocean, Mint, Neon and Moonlight" width="820">
+</p>
 
 ## Install
 
@@ -75,20 +92,20 @@ The hook does the speaking. The app gives you the controls and the glow. They sh
 | File | Written by | Used for |
 | --- | --- | --- |
 | `~/.claude/tts_off` | The switch | While this file exists, the hook stays silent. |
-| `~/.claude/tts_voice` | The voice picker | The hook passes this voice to `say -v`. Without the file, `say` uses your system voice. |
+| `~/.claude/tts_settings.json` | The settings window | Holds `voice`, `rate` (words per minute) and `duck` (how loud the music stays, from 0 to 1). The hook passes the voice and rate to `say`. |
 | `$TMPDIR/claude_tts_owner` | The hook | Holds `<hook pid> <say pid>` while a reply is spoken. The glow follows this file. |
 
-Right-click the panel for **Open at Login** and **Quit**.
+Right-click the panel for **Settings…** and **Quit**.
 
 ## Configuration
 
-Set these in the `env` block of `~/.claude/settings.json`:
+The settings window covers everything you need day to day. If you use the hook without the app, set these in the `env` block of `~/.claude/settings.json`. Anything you choose in the settings window takes priority over them.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `CLAUDE_TTS_RATE` | System rate | Speaking rate, in words per minute. |
+| `CLAUDE_TTS_VOICE` | System voice | The voice to use. |
+| `CLAUDE_TTS_RATE` | The voice's own rate | Speaking rate, in words per minute. |
 | `CLAUDE_TTS_DUCK` | `0.5` | How loud the music stays while Claude speaks, as a fraction of its volume. |
-| `CLAUDE_TTS_VOICE` | System voice | The voice to use when none is picked in the notch. |
 
 ## Uninstall
 
@@ -119,6 +136,6 @@ Open System Settings → Privacy & Security → Automation. Allow Claude Code, o
 <details>
 <summary><b>I want better voices</b></summary>
 
-Download Premium or Enhanced voices in System Settings → Accessibility → Spoken Content → System Voice → Manage Voices. The next time you open the voice menu in the notch, they're in the list.
+Download Premium or Enhanced voices in System Settings → Accessibility → Spoken Content → System Voice → Manage Voices. Then reopen NotchVoice's settings, and they're in the voice list.
 
 </details>

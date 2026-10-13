@@ -36,7 +36,7 @@ if os.path.exists(path):
         json.dump(settings, f, indent=2)
         f.write("\n")
 EOF
-  rm -f "$HOOK" "$HOME/.claude/tts_off" "$HOME/.claude/tts_voice"
+  rm -f "$HOOK" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
   echo "NotchVoice and the voice hook are removed. Restart Claude Code."
   exit 0
 fi

@@ -12,6 +12,7 @@ final class VoiceController: ObservableObject {
     @Published private(set) var isSpeaking = false
     @Published private(set) var voiceID: String?
     @Published private(set) var voiceName = "System Voice"
+    @Published private(set) var systemVoiceLabel = "System Voice"
     @Published private(set) var speed = 1.0
     @Published private(set) var musicVolume = 0.5
     @Published private(set) var keepsRepliesShort = true
@@ -43,7 +44,7 @@ final class VoiceController: ObservableObject {
 
     func setVoice(_ id: String?) {
         voiceID = id
-        voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? "System Voice"
+        voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? systemVoiceLabel
         saveSettings()
         playSample()
     }
@@ -67,8 +68,9 @@ final class VoiceController: ObservableObject {
         let settings = (try? Data(contentsOf: settingsFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
         let id = (settings["voice"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        systemVoiceLabel = VoiceCatalog.systemVoiceLabel
         voiceID = id
-        voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? "System Voice"
+        voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? systemVoiceLabel
         speed = (settings["rate"] as? Double).map { ($0 / Self.baseRate * 10).rounded() / 10 } ?? 1
         musicVolume = settings["duck"] as? Double ?? 0.5
         keepsRepliesShort = settings["brief"] as? Bool ?? true

@@ -44,6 +44,57 @@ struct VoiceCatalog {
         AVSpeechSynthesisVoice(identifier: identifier).map(displayName)
     }
 
+    static var systemVoiceLabel: String {
+        systemVoiceName().map { "\($0) (System)" } ?? "System Voice"
+    }
+
+    // `say` without a voice uses the Spoken Content voice, which macOS keeps per language in the Accessibility domain.
+    static func systemVoiceName() -> String? {
+        let selections = CFPreferencesCopyAppValue(
+            "SpokenContentDefaultVoiceSelectionsByLanguage" as CFString, "com.apple.Accessibility" as CFString
+        ) as? [Any] ?? []
+        let locale = Locale.preferredLanguages.first ?? "en-US"
+        guard let id = selectedVoiceID(in: selections, language: languageCode(locale)) else { return nil }
+        if id.hasPrefix("com.apple.siri."), let name = id.split(separator: ".").last {
+            return siriVoiceName(String(name), voiceMap: siriVoiceMap(), preferredLocale: locale)
+        }
+        return displayName(of: id)
+    }
+
+    static func selectedVoiceID(in selections: [Any], language: String) -> String? {
+        var fallback: String?
+        for index in stride(from: 0, to: selections.count - 1, by: 2) {
+            guard let code = selections[index] as? String,
+                  let id = (selections[index + 1] as? [String: Any])?["voiceId"] as? String else { continue }
+            if code == language { return id }
+            fallback = fallback ?? id
+        }
+        return fallback
+    }
+
+    static func siriVoiceName(_ name: String, voiceMap: [String: [[String: Any]]], preferredLocale: String) -> String {
+        let language = languageCode(preferredLocale)
+        let locales = voiceMap.keys.sorted { a, b in
+            let rankA = a == preferredLocale ? 0 : languageCode(a) == language ? 1 : 2
+            let rankB = b == preferredLocale ? 0 : languageCode(b) == language ? 1 : 2
+            return rankA != rankB ? rankA < rankB : a < b
+        }
+        for locale in locales {
+            let voice = voiceMap[locale]?.first { ($0["name"] as? String)?.caseInsensitiveCompare(name) == .orderedSame }
+            if let order = voice?["order"] as? Int {
+                return "Siri Voice \(order)"
+            }
+        }
+        return "Siri (\(name.capitalized))"
+    }
+
+    private static func siriVoiceMap() -> [String: [[String: Any]]] {
+        let path = "/System/Library/PrivateFrameworks/SiriTTSService.framework/Resources/AssistantVoiceMap.plist"
+        guard let data = FileManager.default.contents(atPath: path),
+              let map = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: [[String: Any]]] else { return [:] }
+        return map
+    }
+
     private static func groups(_ voices: [AVSpeechSynthesisVoice]) -> [LocaleGroup] {
         let byLocale = Dictionary(grouping: voices, by: \.language)
         return byLocale.keys

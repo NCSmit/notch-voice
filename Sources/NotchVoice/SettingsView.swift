@@ -41,6 +41,7 @@ final class SettingsWindowController {
 
 struct SettingsView: View {
     static let size = CGSize(width: 470, height: 926)
+    private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
@@ -64,8 +65,9 @@ struct SettingsView: View {
                     LabeledContent {
                         Button("Play Sample", systemImage: "play.fill") { voice.playSample() }
                     } label: {
-                        Text("Hear the voice with these settings")
-                            .foregroundStyle(.secondary)
+                        Button("Change System Voice…") { NSWorkspace.shared.open(Self.spokenContentSettings) }
+                            .buttonStyle(.link)
+                            .help("Opens Spoken Content in System Settings, where your Mac's voice is chosen")
                     }
                     Toggle("Keep spoken replies short", isOn: keepsRepliesShort)
                 } header: {
@@ -157,7 +159,7 @@ struct SettingsView: View {
 
     private var voiceMenu: some View {
         Menu {
-            voiceToggle(id: nil, name: "System Voice")
+            voiceToggle(id: nil, name: voice.systemVoiceLabel)
             ForEach(catalog.preferred) { group in
                 Section(group.title) {
                     ForEach(group.voices) { voiceToggle(id: $0.id, name: $0.name) }

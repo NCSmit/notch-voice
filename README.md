@@ -86,7 +86,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
   <img src="docs/settings.png" alt="The NotchVoice settings window with voice, speed, short replies, music volume, glow theme, permission and mute shortcut settings" width="470">
 </p>
 
-- **Voice.** Choose any macOS voice installed on your Mac. You hear a short sample as soon as you pick one.
+- **Voice.** By default NotchVoice uses your Mac's own spoken content voice, and the menu shows its name, for example "Siri Voice 1 (System)". **Change System Voice…** opens the Spoken Content page in System Settings, where that voice is chosen. You can also choose any other installed macOS voice, and you hear a short sample as soon as you pick one.
 - **Speed.** Set how fast replies are read, from 0.6× to 2×.
 - **Short replies.** Turn the "keep spoken replies short" reminder on or off. It's on by default.
 - **Music volume.** Choose how loud Spotify and Apple Music stay while Claude speaks, from silent to unchanged.
@@ -203,6 +203,8 @@ Open System Settings → Privacy & Security → Automation. Allow Claude Code, o
 <summary><b>I want better voices</b></summary>
 
 Download Premium or Enhanced voices in System Settings → Accessibility → Spoken Content → System Voice → Manage Voices. Then reopen NotchVoice's settings, and they're in the voice list.
+
+To use a Siri voice, click **Change System Voice…** in NotchVoice settings, pick the Siri voice as the system voice there, and leave NotchVoice on its system voice option. macOS only lets apps use Siri voices as the system voice.
 
 </details>
 

@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Stop hook: read Claude's last reply aloud with macOS `say` (fully offline).
+
+Voice: the one picked in the NotchVoice notch app (saved in ~/.claude/tts_voice), else $CLAUDE_TTS_VOICE
+(any name from `say -v '?'`), else the system Spoken Content voice (System Settings > Accessibility > Spoken Content).
+Rate: $CLAUDE_TTS_RATE (words/min).
+Mute: touch ~/.claude/tts_off   Unmute: rm ~/.claude/tts_off
+Music ducking: Spotify / Music drop to $CLAUDE_TTS_DUCK (default 0.5) of their volume while speaking.
+"""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+
+HOME = os.path.expanduser("~")
+MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
+VOICE_FILE = os.path.join(HOME, ".claude", "tts_voice")
+# "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
+OWNER_FILE = os.path.join(tempfile.gettempdir(), "claude_tts_owner")
+DUCK_FILE = os.path.join(tempfile.gettempdir(), "claude_tts_duck.json")
+MUSIC_APPS = ["Spotify", "Music"]
+
+
+def is_tool_result_only(content):
+    return isinstance(content, list) and content and all(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
+
+
+def last_reply_from_transcript(path):
+    try:
+        with open(path) as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+    except (OSError, json.JSONDecodeError):
+        return ""
+    chunks = []
+    for entry in reversed(entries):
+        msg = entry.get("message") or {}
+        if entry.get("type") == "user" and not is_tool_result_only(msg.get("content")):
+            break
+        if entry.get("type") != "assistant":
+            continue
+        for block in reversed(msg.get("content") or []):
+            if isinstance(block, dict) and block.get("type") == "text":
+                chunks.append(block.get("text", ""))
+    return "\n\n".join(reversed(chunks))
+
+
+def clean(text):
+    text = re.sub(r"```.*?```", " (code block omitted) ", text, flags=re.S)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # markdown links -> label
+    text = re.sub(r"https?://\S+", "link", text)
+    text = re.sub(r"^\s*[#>|]+\s*", "", text, flags=re.M)
+    text = re.sub(r"^\s*[-*]\s+", "", text, flags=re.M)
+    text = re.sub(r"[*_~]{1,3}", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def chosen_voice():
+    try:
+        with open(VOICE_FILE) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def read_owner():
+    try:
+        with open(OWNER_FILE) as f:
+            return [int(pid) for pid in f.read().split()]
+    except (OSError, ValueError):
+        return []
+
+
+def write_owner(*pids):
+    with open(OWNER_FILE, "w") as f:
+        f.write(" ".join(str(pid) for pid in pids))
+
+
+def is_owner():
+    owner = read_owner()
+    return bool(owner) and owner[0] == os.getpid()
+
+
+def take_over():
+    """Stop the previous reply at any stage (still preparing or already speaking) and claim the voice."""
+    for pid in read_owner():
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    write_owner(os.getpid())
+
+
+def osascript(script):
+    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def app_volume(app):
+    # "is running" never launches the app.
+    out = osascript(f'if application "{app}" is running then tell application "{app}" to get sound volume')
+    return int(out) if out.isdigit() else None
+
+
+def set_app_volume(app, volume):
+    osascript(f'if application "{app}" is running then tell application "{app}" to set sound volume to {volume}')
+
+
+def duck_music():
+    # Keep the first saved volumes when a reply interrupts another, so the restore uses the real level.
+    if os.path.exists(DUCK_FILE):
+        return
+    factor = float(os.environ.get("CLAUDE_TTS_DUCK", "0.5"))
+    original = {app: v for app in MUSIC_APPS if (v := app_volume(app)) is not None}
+    with open(DUCK_FILE, "w") as f:
+        json.dump(original, f)
+    for app, volume in original.items():
+        set_app_volume(app, round(volume * factor))
+
+
+def restore_music():
+    try:
+        with open(DUCK_FILE) as f:
+            original = json.load(f)
+        os.remove(DUCK_FILE)
+    except (OSError, ValueError):
+        return
+    for app, volume in original.items():
+        set_app_volume(app, volume)
+
+
+def main():
+    if os.path.exists(MUTE_FILE):
+        return
+    payload = json.load(sys.stdin)
+    text = payload.get("last_assistant_message") or last_reply_from_transcript(
+        payload.get("transcript_path", "")
+    )
+    text = clean(text or "")
+    if not text:
+        return
+
+    cmd = ["say"]
+    voice = chosen_voice() or os.environ.get("CLAUDE_TTS_VOICE")
+    if voice:
+        cmd += ["-v", voice]
+    if os.environ.get("CLAUDE_TTS_RATE"):
+        cmd += ["-r", os.environ["CLAUDE_TTS_RATE"]]
+
+    take_over()
+    duck_music()
+    if not is_owner():
+        return  # A newer reply took over while we were ducking; it restores the music.
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+    write_owner(os.getpid(), proc.pid)
+    proc.communicate(text)
+    # A newer reply kills this process outright, so reaching here means we finished last.
+    if is_owner():
+        restore_music()
+        os.remove(OWNER_FILE)
+
+if __name__ == "__main__":
+    main()

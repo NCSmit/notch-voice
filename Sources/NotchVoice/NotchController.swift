@@ -1,0 +1,191 @@
+import AppKit
+import SwiftUI
+
+struct NotchMetrics: Equatable {
+    var notch: CGSize
+    var hasNotch: Bool
+
+    static let closedTopRadius: CGFloat = 6
+    static let closedBottomRadius: CGFloat = 10
+    static let openTopRadius: CGFloat = 10
+    static let openBottomRadius: CGFloat = 22
+    static let glowMargin: CGFloat = 60
+
+    var closedSize: CGSize { CGSize(width: notch.width + 2 * Self.closedTopRadius, height: notch.height) }
+    var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 92) }
+    var windowSize: CGSize { CGSize(width: openSize.width + 2 * Self.glowMargin, height: openSize.height + Self.glowMargin) }
+
+    @MainActor
+    static func target() -> (screen: NSScreen, metrics: NotchMetrics)? {
+        if let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }),
+           let left = screen.auxiliaryTopLeftArea,
+           let right = screen.auxiliaryTopRightArea {
+            let notch = CGSize(width: screen.frame.width - left.width - right.width, height: screen.safeAreaInsets.top)
+            return (screen, NotchMetrics(notch: notch, hasNotch: true))
+        }
+        guard let screen = NSScreen.screens.first else { return nil }
+        let menuBarHeight = max(screen.frame.maxY - screen.visibleFrame.maxY, 24)
+        return (screen, NotchMetrics(notch: CGSize(width: 185, height: menuBarHeight), hasNotch: false))
+    }
+}
+
+@MainActor
+final class NotchState: ObservableObject {
+    @Published var isOpen = false
+    @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
+}
+
+@MainActor
+final class NotchController {
+    private let voice: VoiceController
+    private let state = NotchState()
+    private let panel = NotchPanel()
+    private var screenFrame = CGRect.zero
+    private var mouseMonitor: Any?
+    private var observers: [NSObjectProtocol] = []
+    private var trackingTimer: Timer?
+    private var hoverStart: Date?
+    private var leaveStart: Date?
+    private var isMenuOpen = false
+    private var voiceMenu: VoiceMenu?
+
+    init(voice: VoiceController) {
+        self.voice = voice
+        let root = NotchRootView(state: state, voice: voice) { [weak self] anchor in
+            self?.showVoiceMenu(below: anchor)
+        }
+        let host = NotchHostingView(rootView: root)
+        host.sizingOptions = []
+        panel.contentView = host
+        layout()
+
+        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            MainActor.assumeIsolated { self?.mouseMoved() }
+        }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.layout() }
+            },
+            center.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.isMenuOpen = true }
+            },
+            center.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.isMenuOpen = false }
+            },
+        ]
+    }
+
+    private func layout() {
+        guard let target = NotchMetrics.target() else { return }
+        screenFrame = target.screen.frame
+        state.metrics = target.metrics
+        let size = target.metrics.windowSize
+        let frame = CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height)
+        panel.setFrame(frame, display: true)
+        panel.orderFrontRegardless()
+    }
+
+    private var hoverZone: CGRect {
+        let notch = state.metrics.notch
+        return CGRect(x: screenFrame.midX - notch.width / 2, y: screenFrame.maxY - notch.height, width: notch.width, height: notch.height + 8)
+    }
+
+    private var panelZone: CGRect {
+        let size = state.metrics.openSize
+        return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
+    }
+
+    private func mouseMoved() {
+        if state.isOpen || hoverZone.contains(NSEvent.mouseLocation) { startTracking() }
+    }
+
+    private func startTracking() {
+        guard trackingTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.track() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        trackingTimer = timer
+        track()
+    }
+
+    private func stopTracking() {
+        trackingTimer?.invalidate()
+        trackingTimer = nil
+        hoverStart = nil
+        leaveStart = nil
+    }
+
+    private func track() {
+        let mouse = NSEvent.mouseLocation
+        let now = Date()
+        if state.isOpen {
+            let inside = panelZone.contains(mouse) || isMenuOpen
+            setInteractive(inside)
+            if inside {
+                leaveStart = nil
+                return
+            }
+            let since = leaveStart ?? now
+            leaveStart = since
+            if now.timeIntervalSince(since) >= 0.3 { setOpen(false) }
+        } else {
+            guard hoverZone.contains(mouse), NSEvent.pressedMouseButtons == 0 else {
+                stopTracking()
+                return
+            }
+            let since = hoverStart ?? now
+            hoverStart = since
+            if now.timeIntervalSince(since) >= 0.15 { setOpen(true) }
+        }
+    }
+
+    private func setOpen(_ open: Bool) {
+        if open { voice.refresh() }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.isOpen = open }
+        setInteractive(open)
+        hoverStart = nil
+        leaveStart = nil
+        if !open { stopTracking() }
+    }
+
+    private func showVoiceMenu(below anchor: CGRect) {
+        let point = NSPoint(x: panel.frame.minX + anchor.minX, y: panel.frame.maxY - anchor.maxY - 4)
+        let menu = VoiceMenu(selectedID: voice.voiceID) { [weak self] id in
+            self?.voice.setVoice(id)
+        }
+        voiceMenu = menu
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { menu.popUp(at: point) }
+        }
+    }
+
+    private func setInteractive(_ interactive: Bool) {
+        if panel.ignoresMouseEvents == interactive { panel.ignoresMouseEvents = !interactive }
+    }
+}
+
+final class NotchPanel: NSPanel {
+    init() {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        ignoresMouseEvents = true
+        isReleasedWhenClosed = false
+        hidesOnDeactivate = false
+        animationBehavior = .none
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+final class NotchHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}

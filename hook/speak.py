@@ -18,10 +18,22 @@ import tempfile
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
-# "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
-OWNER_FILE = os.path.join(tempfile.gettempdir(), "claude_tts_owner")
-DUCK_FILE = os.path.join(tempfile.gettempdir(), "claude_tts_duck.json")
+DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 MUSIC_APPS = ["Spotify", "Music"]
+
+
+def user_temp_dir():
+    # The folder NSTemporaryDirectory() gives the app. TMPDIR can't be trusted for this, because tool servers started
+    # by the Claude desktop app don't get it, and tempfile then falls back to /tmp.
+    try:
+        return os.confstr(DARWIN_USER_TEMP_DIR) or tempfile.gettempdir()
+    except (OSError, ValueError):
+        return tempfile.gettempdir()
+
+
+# "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
+OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
+DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
 
 
 def is_tool_result_only(content):

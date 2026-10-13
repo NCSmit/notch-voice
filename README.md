@@ -72,7 +72,7 @@ To set it, open settings, click **Record** next to **Mute shortcut**, and press 
 
 Chats in the Claude desktop app can be read aloud too. The installer adds a small local tool called `speak` to the desktop app, and NotchVoice asks Claude to call it at the end of each reply with a short spoken summary. It uses the same voice, glow, music ducking and mute switch as Claude Code.
 
-1. Restart the Claude desktop app after installing, so it loads the tool.
+1. Quit the Claude desktop app and open it again after installing, so it loads the tool.
 2. The first time Claude speaks in a chat, the app asks whether NotchVoice may use the tool. Choose to always allow it.
 3. If Claude doesn't call the tool on its own, add this line to your personal preferences in Claude's settings: "At the end of every reply, call the NotchVoice speak tool with a one to three sentence spoken summary."
 
@@ -117,11 +117,11 @@ NotchVoice works wherever Claude Code runs on your Mac: in the terminal, in the 
 
 The installer does five things:
 
-1. It copies three hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, and `notchvoice_brief.py` for short spoken replies. An existing file with the same name is saved with a `.bak` extension first.
-2. It adds them to `~/.claude/settings.json` as `Stop`, `PermissionRequest` and `UserPromptSubmit` hooks, and keeps a backup of that file.
-3. If the Claude desktop app is installed, it adds the `speak` tool (`notchvoice_mcp.py`) to the app's `claude_desktop_config.json` and keeps a backup of that file.
-4. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
-5. It starts the app, which then opens at login.
+1. It copies three hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, and `notchvoice_brief.py` for short spoken replies. The speak tool for desktop chats, `notchvoice_mcp.py`, goes there too. An existing file with the same name is saved with a `.bak` extension first.
+2. It adds the hooks to `~/.claude/settings.json` as `Stop`, `PermissionRequest` and `UserPromptSubmit` hooks, and keeps a backup of that file. It also denies the desktop speak tool there, so Claude Code doesn't read its replies twice.
+3. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
+4. It starts the app, which then opens at login.
+5. If the Claude desktop app is installed, it adds the speak tool to the app's `claude_desktop_config.json` and keeps a backup of that file. The desktop app rewrites that file while it's open, so if it's open, the installer makes the change again as soon as you quit it.
 
 On a Mac without a notch, the panel sits at the top center of the screen instead.
 
@@ -146,7 +146,9 @@ The Stop hook does the speaking. The app gives you the controls and the glow. Th
 | `~/.claude/tts_settings.json` | The settings window | Holds `voice`, `rate` (words per minute), `duck` (how loud the music stays, from 0 to 1) and `brief` (the short-replies reminder). The Stop hook passes the voice and rate to `say`. |
 | `$TMPDIR/claude_tts_owner` | The hook | Holds `<hook pid> <say pid>` while a reply is spoken. The glow follows this file. |
 
-In the desktop app's chats, Claude calls the `speak` tool from `notchvoice_mcp.py`, a small MCP server that runs `speak.py` with the text. Inside Claude Code the server offers no tools, because the `Stop` hook already speaks there.
+`$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.
+
+In the desktop app's chats, Claude calls the `speak` tool from `notchvoice_mcp.py`, a small MCP server that runs `speak.py` with the text. Claude Code must not use it, because the `Stop` hook already speaks there. The desktop app shares its tools with its Code sessions, so the installer denies `mcp__notchvoice__speak` in `settings.json`.
 
 The `UserPromptSubmit` hook adds a one-line reminder to each prompt while voice replies are on and `brief` isn't turned off. The reminder asks Claude to keep its final answer to a few spoken sentences.
 
@@ -180,6 +182,16 @@ This removes the app, its login item, the hooks, the speak tool, and their entri
 - Restart Claude Code after installing. Hooks are loaded when a session starts.
 - Hover over the notch and check that voice replies are on.
 - Run `say hello` in Terminal to check that your Mac can speak.
+
+</details>
+
+<details>
+<summary><b>Chats in the Claude desktop app aren't read aloud</b></summary>
+
+- Quit the Claude desktop app and open it again. It loads the speak tool when it starts.
+- When Claude first asks to use the NotchVoice speak tool, choose to always allow it.
+- If Claude doesn't call the tool, add the line from [Regular Claude chats](#regular-claude-chats) to your personal preferences.
+- If none of that helps, run `./install.sh` again, then quit and reopen the desktop app.
 
 </details>
 

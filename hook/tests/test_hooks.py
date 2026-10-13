@@ -3,9 +3,11 @@ import io
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -25,6 +27,7 @@ speak = load("speak")
 brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
+desktop = load("notchvoice_desktop")
 
 
 def run_main(module, payload):
@@ -71,6 +74,17 @@ class SpeakTests(unittest.TestCase):
                 self.assertEqual(speak.load_settings(), {})
                 path.write_text('{"voice": "Samantha", "rate": 200}')
                 self.assertEqual(speak.load_settings(), {"voice": "Samantha", "rate": 200})
+
+    def test_shares_its_files_with_the_app_whatever_tmpdir_says(self):
+        app_folder = Path(os.confstr(speak.DARWIN_USER_TEMP_DIR))
+        for tmpdir in (None, "/tmp/elsewhere"):
+            with mock.patch.dict(os.environ):
+                os.environ.pop("TMPDIR", None)
+                if tmpdir:
+                    os.environ["TMPDIR"] = tmpdir
+                fresh_speak, fresh_permission = load("speak"), load("notchvoice_permission")
+            self.assertEqual(Path(fresh_speak.OWNER_FILE).parent, app_folder)
+            self.assertEqual(Path(fresh_permission.SOCKET).parent, app_folder)
 
 
 class BriefTests(unittest.TestCase):
@@ -197,6 +211,7 @@ class SpeakToolTests(unittest.TestCase):
             started = mcp.result_for("initialize", {"protocolVersion": "2025-03-26"})
             self.assertEqual(started["protocolVersion"], "2025-03-26")
             self.assertIn("speak tool", started["instructions"])
+            self.assertIn("If you are Claude Code, never call it", started["instructions"])
             self.assertEqual([tool["name"] for tool in mcp.result_for("tools/list", {})["tools"]], ["speak"])
 
     def test_claude_code_gets_nothing_because_its_stop_hook_already_speaks(self):
@@ -231,6 +246,86 @@ class SpeakToolTests(unittest.TestCase):
         replies = [json.loads(line) for line in output.getvalue().splitlines()]
         self.assertEqual(len(replies), 1)
         self.assertEqual(replies[0]["error"]["code"], -32601)
+
+
+class DesktopConfigTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.config = Path(folder.name) / "claude_desktop_config.json"
+        self.server = Path(folder.name) / "notchvoice_mcp.py"
+        self.server.touch()
+        self.config.write_text(json.dumps({"preferences": {"theme": "dark"}, "mcpServers": {"other": {"command": "other"}}}))
+
+    def sync(self):
+        return desktop.sync(str(self.config), str(self.server))
+
+    def read(self):
+        return json.loads(self.config.read_text())
+
+    def test_adds_the_speak_tool_and_keeps_everything_else(self):
+        self.assertEqual(self.sync(), "added")
+        config = self.read()
+        self.assertEqual(config["mcpServers"]["notchvoice"], {"command": "/usr/bin/python3", "args": [str(self.server)]})
+        self.assertEqual(config["mcpServers"]["other"], {"command": "other"})
+        self.assertEqual(config["preferences"], {"theme": "dark"})
+        self.assertNotIn("notchvoice", json.loads(Path(f"{self.config}.bak").read_text())["mcpServers"])
+
+    def test_takes_the_speak_tool_out_once_it_is_uninstalled(self):
+        self.sync()
+        self.server.unlink()
+        self.assertEqual(self.sync(), "removed")
+        self.assertEqual(self.read()["mcpServers"], {"other": {"command": "other"}})
+
+    def test_leaves_a_config_that_already_matches_untouched(self):
+        self.sync()
+        written = self.config.read_text()
+        self.assertIsNone(self.sync())
+        self.assertEqual(self.config.read_text(), written)
+
+    def test_never_overwrites_a_config_it_cannot_read(self):
+        self.config.write_text("{ not json")
+        with self.assertRaises(ValueError):
+            self.sync()
+        self.assertEqual(self.config.read_text(), "{ not json")
+
+    def test_does_nothing_without_the_desktop_app(self):
+        missing = self.config.parent / "Claude" / "claude_desktop_config.json"
+        self.assertIsNone(desktop.sync(str(missing), str(self.server)))
+        self.assertFalse(missing.parent.exists())
+
+    def test_finds_the_desktop_app_but_not_claude_code(self):
+        processes = (
+            "  101 /Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper\n"
+            "  102 /Users/me/Library/Application Support/Claude/claude-code/2.1/claude.app/Contents/MacOS/claude\n"
+        )
+        with mock.patch.object(desktop.subprocess, "run", return_value=mock.Mock(stdout=processes)):
+            self.assertIsNone(desktop.desktop_app_pid())
+        with mock.patch.object(desktop.subprocess, "run", return_value=mock.Mock(stdout=processes + "  100 /Applications/Claude.app/Contents/MacOS/Claude\n")):
+            self.assertEqual(desktop.desktop_app_pid(), 100)
+
+    def test_while_the_app_is_open_the_edit_is_made_again_after_it_quits(self):
+        with mock.patch.object(sys, "argv", ["notchvoice_desktop.py"]), mock.patch.object(desktop, "sync", return_value="added"), \
+                mock.patch.object(desktop, "desktop_app_pid", return_value=100), mock.patch.object(desktop.subprocess, "Popen") as popen, \
+                redirect_stdout(io.StringIO()) as output:
+            desktop.main()
+        self.assertEqual(popen.call_args.args[0][-1], "--after-quit")
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIn("Quit the Claude desktop app", output.getvalue())
+
+        with mock.patch.object(sys, "argv", ["notchvoice_desktop.py", "--after-quit"]), \
+                mock.patch.object(desktop, "desktop_app_pid", side_effect=[100, 200, None]), \
+                mock.patch.object(desktop, "wait_for_exit") as wait, mock.patch.object(desktop, "sync") as sync:
+            desktop.main()
+        self.assertEqual([call.args[0] for call in wait.call_args_list], [100, 200])
+        sync.assert_called_once_with()
+
+    def test_waiting_ends_as_soon_as_the_app_quits(self):
+        app = subprocess.Popen(["sleep", "0.3"])
+        started = time.monotonic()
+        desktop.wait_for_exit(app.pid)
+        self.assertLess(time.monotonic() - started, 0.9)
+        app.wait()
 
 
 if __name__ == "__main__":

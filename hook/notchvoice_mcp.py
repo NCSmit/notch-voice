@@ -2,8 +2,10 @@
 """MCP server that lets regular chats in the Claude desktop app speak through NotchVoice.
 
 It offers one tool, speak, which reads a short message aloud with the same voice, glow and music ducking as
-Claude Code's spoken replies, because it runs speak.py. Inside Claude Code it offers nothing, since the Stop hook
-already reads replies aloud there.
+Claude Code's spoken replies, because it runs speak.py. Claude Code reads its replies aloud with the Stop hook, so
+the tool must stay out of it. When Claude Code starts this server itself, the server offers nothing. The desktop app
+shares the servers it starts with its Code sessions too, so there the installer denies the tool in settings.json and
+the instructions tell Claude Code to leave it alone.
 """
 import json
 import os
@@ -15,9 +17,10 @@ MUTE_FILE = os.path.join(os.path.expanduser("~"), ".claude", "tts_off")
 IN_CLAUDE_CODE = bool(os.environ.get("CLAUDECODE"))
 
 INSTRUCTIONS = (
-    "The user listens to your replies through NotchVoice. At the end of every reply, call the speak tool once with "
-    "a spoken version of your answer: one to three short, plain sentences with the main point, and no markdown, "
-    "code or links."
+    "The user listens to your replies through NotchVoice. In a chat, call the speak tool once at the end of every "
+    "reply with a spoken version of your answer: one to three short, plain sentences with the main point, and no "
+    "markdown, code or links. If you are Claude Code, never call it, because Claude Code already reads your final "
+    "reply aloud."
 )
 SPEAK_TOOL = {
     "name": "speak",

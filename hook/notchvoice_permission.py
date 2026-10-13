@@ -13,12 +13,24 @@ import socket
 import sys
 import tempfile
 
-SOCKET = os.path.join(tempfile.gettempdir(), "notchvoice.sock")
+DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 # These need a real answer in Claude's own UI, not a yes or no.
 SKIPPED_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 MAX_TEXT = 4000
 KEY_FIELDS = ("command", "file_path", "notebook_path", "url", "query")
 TAIL_BYTES = 512 * 1024
+
+
+def user_temp_dir():
+    # The folder NSTemporaryDirectory() gives the app. TMPDIR can't be trusted for this, because tool servers started
+    # by the Claude desktop app don't get it, and tempfile then falls back to /tmp.
+    try:
+        return os.confstr(DARWIN_USER_TEMP_DIR) or tempfile.gettempdir()
+    except (OSError, ValueError):
+        return tempfile.gettempdir()
+
+
+SOCKET = os.path.join(user_temp_dir(), "notchvoice.sock")
 
 
 def trimmed(value):

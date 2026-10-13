@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 
 HOOKS="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
+DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
 APP="$HOME/Applications/NotchVoice.app"
 
 if [[ "${1:-}" == "--uninstall" ]]; then
@@ -37,7 +38,22 @@ if os.path.exists(path):
         json.dump(settings, f, indent=2)
         f.write("\n")
 EOF
-  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
+  python3 - "$DESKTOP_CONFIG" <<'EOF'
+import json, os, sys
+
+path = sys.argv[1]
+if os.path.exists(path):
+    with open(path) as f:
+        config = json.load(f)
+    servers = config.get("mcpServers", {})
+    if servers.pop("notchvoice", None) is not None:
+        if not servers:
+            config.pop("mcpServers", None)
+        with open(path, "w") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+EOF
+  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
   echo "NotchVoice and its hooks are removed. Restart Claude Code."
   exit 0
 fi
@@ -48,7 +64,7 @@ if ! command -v swift >/dev/null 2>&1; then
 fi
 
 mkdir -p "$HOOKS"
-for script in speak.py notchvoice_permission.py notchvoice_brief.py; do
+for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py; do
   if [[ -f "$HOOKS/$script" ]] && ! cmp -s "hook/$script" "$HOOKS/$script"; then
     cp "$HOOKS/$script" "$HOOKS/$script.bak"
     echo "Saved your previous $script as $HOOKS/$script.bak"
@@ -89,6 +105,32 @@ if added:
         f.write("\n")
     print(f"Added the {', '.join(added)} hook{'s' if len(added) > 1 else ''} to {path}")
 EOF
+
+if [[ -d "$(dirname "$DESKTOP_CONFIG")" ]]; then
+  python3 - "$DESKTOP_CONFIG" "$HOOKS/notchvoice_mcp.py" <<'EOF'
+import json, os, shutil, sys
+
+path, script = sys.argv[1], sys.argv[2]
+config = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            config = json.load(f)
+    except ValueError as error:
+        print(f"Skipped regular chats: could not read {path} ({error}).", file=sys.stderr)
+        sys.exit(0)
+wanted = {"command": "/usr/bin/python3", "args": [script]}
+servers = config.setdefault("mcpServers", {})
+if servers.get("notchvoice") != wanted:
+    if os.path.exists(path):
+        shutil.copy2(path, path + ".bak")
+    servers["notchvoice"] = wanted
+    with open(path, "w") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+    print(f"Added the NotchVoice speak tool to {path}. Restart the Claude desktop app to use it in chats.")
+EOF
+fi
 
 ./build.sh --install
 echo "Done. Restart Claude Code, then hover over the notch."

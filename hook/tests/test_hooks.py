@@ -24,6 +24,7 @@ def load(name):
 speak = load("speak")
 brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
+mcp = load("notchvoice_mcp")
 
 
 def run_main(module, payload):
@@ -188,6 +189,48 @@ class PermissionHookTests(unittest.TestCase):
         value = permission.trimmed({"content": "x" * 5000, "items": list(range(100))})
         self.assertEqual(len(value["content"]), permission.MAX_TEXT + 1)
         self.assertEqual(len(value["items"]), 50)
+
+
+class SpeakToolTests(unittest.TestCase):
+    def test_regular_chats_get_the_speak_tool_and_instructions(self):
+        with mock.patch.object(mcp, "IN_CLAUDE_CODE", False):
+            started = mcp.result_for("initialize", {"protocolVersion": "2025-03-26"})
+            self.assertEqual(started["protocolVersion"], "2025-03-26")
+            self.assertIn("speak tool", started["instructions"])
+            self.assertEqual([tool["name"] for tool in mcp.result_for("tools/list", {})["tools"]], ["speak"])
+
+    def test_claude_code_gets_nothing_because_its_stop_hook_already_speaks(self):
+        with mock.patch.object(mcp, "IN_CLAUDE_CODE", True):
+            self.assertNotIn("instructions", mcp.result_for("initialize", {}))
+            self.assertEqual(mcp.result_for("tools/list", {}), {"tools": []})
+            self.assertIsNone(mcp.result_for("tools/call", {"name": "speak", "arguments": {"text": "hi"}}))
+
+    def test_speak_passes_the_text_on(self):
+        with mock.patch.object(mcp, "IN_CLAUDE_CODE", False), mock.patch.object(mcp, "speak", return_value="Speaking.") as speak_call:
+            result = mcp.result_for("tools/call", {"name": "speak", "arguments": {"text": "  Hello  "}})
+        speak_call.assert_called_once_with("Hello")
+        self.assertEqual(result["content"][0]["text"], "Speaking.")
+
+    def test_speaking_nothing_is_an_error(self):
+        with mock.patch.object(mcp, "IN_CLAUDE_CODE", False):
+            self.assertTrue(mcp.result_for("tools/call", {"name": "speak", "arguments": {}})["isError"])
+
+    def test_nothing_is_spoken_while_voice_replies_are_muted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            mute_file = Path(folder) / "tts_off"
+            mute_file.touch()
+            with mock.patch.object(mcp, "MUTE_FILE", str(mute_file)), mock.patch.object(mcp.subprocess, "Popen") as popen:
+                self.assertIn("off", mcp.speak("hi"))
+            popen.assert_not_called()
+
+    def test_notifications_get_no_reply_and_unknown_requests_get_an_error(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            mcp.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            mcp.handle({"jsonrpc": "2.0", "id": 7, "method": "resources/list"})
+        replies = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(replies), 1)
+        self.assertEqual(replies[0]["error"]["code"], -32601)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ Thanks for helping out. NotchVoice is a small project, so focused pull requests 
   - `speak.py` is the `Stop` hook. It reads Claude's replies aloud.
   - `notchvoice_permission.py` is the `PermissionRequest` hook. It sends permission requests to the notch.
   - `notchvoice_brief.py` is the `UserPromptSubmit` hook. It asks Claude to keep spoken replies short.
+- **`hook/notchvoice_mcp.py`** is a small MCP server for chats in the Claude desktop app. Its `speak` tool runs `speak.py` with the text Claude passes in.
 - **`Tests/`** and **`hook/tests/`** hold the tests for the app and the hooks.
 
 The app and the hooks never call each other directly. They share a few files in `~/.claude/`, plus a socket in `$TMPDIR` for permission requests. The [How it works](README.md#how-it-works) section of the README lists them. If you change one side of that contract, change the other side in the same pull request.
@@ -24,7 +25,7 @@ swift build
 ```
 
 - `./build.sh --install` builds the app, replaces the copy in `~/Applications` and restarts it.
-- `./install.sh` does the same, and also copies the hooks into `~/.claude/hooks/` and registers them in `~/.claude/settings.json`. It keeps backups of anything it replaces. Restart Claude Code afterwards, because Claude Code loads hooks when a session starts.
+- `./install.sh` does the same. It also copies the hooks into `~/.claude/hooks/`, registers them in `~/.claude/settings.json`, and adds the speak tool to the Claude desktop app's config. It keeps backups of anything it replaces. Restart Claude Code and the Claude desktop app afterwards, because both load these at startup.
 
 ## Running the tests
 

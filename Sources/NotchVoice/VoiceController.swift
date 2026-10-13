@@ -14,6 +14,7 @@ final class VoiceController: ObservableObject {
     @Published private(set) var voiceName = "System Voice"
     @Published private(set) var speed = 1.0
     @Published private(set) var musicVolume = 0.5
+    @Published private(set) var keepsRepliesShort = true
 
     // The contract of ~/.claude/hooks/speak.py: it stays silent while the mute file exists, takes its voice, rate
     // and music level from the settings file, and writes "<hook pid> <say pid>" to the owner file while it speaks.
@@ -57,6 +58,11 @@ final class VoiceController: ObservableObject {
         saveSettings()
     }
 
+    func setKeepsRepliesShort(_ enabled: Bool) {
+        keepsRepliesShort = enabled
+        saveSettings()
+    }
+
     func loadSettings() {
         let settings = (try? Data(contentsOf: settingsFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
@@ -65,6 +71,7 @@ final class VoiceController: ObservableObject {
         voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? "System Voice"
         speed = (settings["rate"] as? Double).map { ($0 / Self.baseRate * 10).rounded() / 10 } ?? 1
         musicVolume = settings["duck"] as? Double ?? 0.5
+        keepsRepliesShort = settings["brief"] as? Bool ?? true
     }
 
     func playSample() {
@@ -107,7 +114,7 @@ final class VoiceController: ObservableObject {
     }
 
     private func saveSettings() {
-        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume))]
+        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort]
         if let voiceID { settings["voice"] = voiceID }
         if abs(speed - 1) > 0.01 { settings["rate"] = Int((Self.baseRate * speed).rounded()) }
         guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) else { return }

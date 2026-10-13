@@ -33,13 +33,14 @@ final class SettingsWindowController {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        window.setContentSize(SettingsView.size)
+        let available = (NSScreen.main?.visibleFrame.height ?? SettingsView.size.height) - 24
+        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(SettingsView.size.height, available)))
         return window
     }
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 856)
+    static let size = CGSize(width: 470, height: 926)
 
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
@@ -49,7 +50,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             header
             Form {
-                Section("Voice") {
+                Section {
                     LabeledContent("Voice") { voiceMenu }
                     LabeledContent("Speed") {
                         HStack(spacing: 10) {
@@ -66,6 +67,11 @@ struct SettingsView: View {
                         Text("Hear the voice with these settings")
                             .foregroundStyle(.secondary)
                     }
+                    Toggle("Keep spoken replies short", isOn: keepsRepliesShort)
+                } header: {
+                    Text("Voice")
+                } footer: {
+                    Text("Reminds Claude to answer in a few sentences while voice replies are on.")
                 }
                 Section {
                     LabeledContent("Music volume") {
@@ -82,7 +88,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Music")
                 } footer: {
-                    Text("While Claude speaks, Spotify and Apple Music turn down to this level. Afterwards they go back to how loud they were.")
+                    Text("Spotify and Apple Music turn down to this level while Claude speaks.")
                 }
                 Section("Glow") {
                     themePicker
@@ -92,7 +98,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Permissions")
                 } footer: {
-                    Text("Allow or deny Claude's requests from the notch. Claude's own prompt still works too, and the first answer counts.")
+                    Text("Claude's own prompt still works too, and the first answer counts.")
                 }
                 Section("General") {
                     ShortcutRecorder(
@@ -106,10 +112,10 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
-            .scrollDisabled(true)
             footer
         }
-        .frame(width: Self.size.width, height: Self.size.height)
+        .frame(width: Self.size.width)
+        .frame(minHeight: 480, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -217,6 +223,10 @@ struct SettingsView: View {
 
     private var speed: Binding<Double> {
         Binding(get: { voice.speed }, set: { voice.setSpeed(($0 * 10).rounded() / 10) })
+    }
+
+    private var keepsRepliesShort: Binding<Bool> {
+        Binding(get: { voice.keepsRepliesShort }, set: { voice.setKeepsRepliesShort($0) })
     }
 
     private var musicVolume: Binding<Double> {

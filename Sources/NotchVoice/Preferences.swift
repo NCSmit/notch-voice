@@ -4,15 +4,18 @@ import Foundation
 final class Preferences: ObservableObject {
     private static let themeKey = "glowTheme"
     private static let muteShortcutKey = "muteShortcut"
+    private static let permissionsKey = "asksForPermissionInNotch"
 
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
     @Published private(set) var muteShortcut: Shortcut?
+    @Published private(set) var asksForPermission: Bool
     private let muteHotkey: Hotkey
 
     init(muteHotkey: Hotkey) {
         theme = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(GlowTheme.init(rawValue:)) ?? .aurora
         opensAtLogin = LoginItem.isEnabled
+        asksForPermission = UserDefaults.standard.object(forKey: Self.permissionsKey) as? Bool ?? true
         self.muteHotkey = muteHotkey
         muteShortcut = Self.savedMuteShortcut.flatMap { muteHotkey.register($0) ? $0 : nil }
     }
@@ -20,6 +23,11 @@ final class Preferences: ObservableObject {
     func setTheme(_ theme: GlowTheme) {
         self.theme = theme
         UserDefaults.standard.set(theme.rawValue, forKey: Self.themeKey)
+    }
+
+    func setAsksForPermission(_ enabled: Bool) {
+        asksForPermission = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.permissionsKey)
     }
 
     func setOpensAtLogin(_ enabled: Bool) {
@@ -36,6 +44,10 @@ final class Preferences: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.muteShortcutKey)
         }
         return true
+    }
+
+    func pauseMuteShortcut(_ paused: Bool) {
+        _ = muteHotkey.register(paused ? nil : muteShortcut)
     }
 
     func refresh() {

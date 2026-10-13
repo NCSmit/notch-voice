@@ -5,6 +5,7 @@ struct NotchRootView: View {
     @ObservedObject var state: NotchState
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
+    let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
@@ -13,9 +14,12 @@ struct NotchRootView: View {
             isOpen: state.isOpen,
             isEnabled: voice.isEnabled,
             isSpeaking: voice.isSpeaking,
-            isGlowing: voice.isSpeaking || state.isPreviewingGlow,
+            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil,
             theme: preferences.theme,
+            prompt: state.prompt,
+            pendingCount: state.pendingCount,
             setEnabled: voice.setEnabled,
+            answer: answer,
             openSettings: openSettings
         )
     }
@@ -28,14 +32,18 @@ struct NotchView: View {
     let isSpeaking: Bool
     let isGlowing: Bool
     let theme: GlowTheme
+    let prompt: PermissionPrompt?
+    let pendingCount: Int
     let setEnabled: @MainActor (Bool) -> Void
+    let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
-        let size = isOpen ? metrics.openSize : metrics.closedSize
-        let topRadius = isOpen ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
-        let bottomRadius = isOpen ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
-        let showsBody = isOpen || isGlowing
+        let isExpanded = isOpen || prompt != nil
+        let size = prompt != nil ? metrics.permissionSize : isOpen ? metrics.openSize : metrics.closedSize
+        let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
+        let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
+        let showsBody = isExpanded || isGlowing
 
         ZStack(alignment: .top) {
             NotchGlow(
@@ -48,7 +56,15 @@ struct NotchView: View {
                 .animation(showsBody ? .easeOut(duration: 0.15) : .easeIn(duration: 0.2).delay(0.3)) {
                     $0.opacity(showsBody ? 1 : 0)
                 }
-            if isOpen {
+            if let prompt {
+                PermissionCard(prompt: prompt, pendingCount: pendingCount, accent: theme.accent, answer: answer)
+                    .id(prompt.id)
+                    .padding(.top, metrics.notch.height)
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
+                        removal: .opacity.animation(.easeIn(duration: 0.1))
+                    ))
+            } else if isOpen {
                 VoicePanel(
                     isEnabled: isEnabled,
                     isSpeaking: isSpeaking,
@@ -200,6 +216,96 @@ struct VoicePanel: View {
         if isSpeaking { return "Speaking…" }
         return isEnabled ? "Replies are read aloud" : "Off"
     }
+}
+
+struct PermissionCard: View {
+    let prompt: PermissionPrompt
+    let pendingCount: Int
+    let accent: LinearGradient
+    let answer: @MainActor (UUID, PermissionResponse) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: prompt.symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(accent))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(prompt.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text([prompt.note, prompt.project.isEmpty ? nil : prompt.project].compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "Claude is asking")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if pendingCount > 1 {
+                    Text("+\(pendingCount - 1) more")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.white.opacity(0.1)))
+                }
+                Button { answer(prompt.id, .dismiss) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Answer in Claude instead")
+                .accessibilityLabel("Dismiss and answer in Claude")
+            }
+            ScrollView {
+                Text(prompt.detail.isEmpty ? "No details" : prompt.detail)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(.white.opacity(prompt.detail.isEmpty ? 0.4 : 0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollIndicators(.never)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxHeight: .infinity)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.08)))
+            HStack(spacing: 8) {
+                Spacer()
+                Button { answer(prompt.id, .deny) } label: {
+                    Text("Deny")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 96, height: 28)
+                        .background(Capsule().fill(Color.white.opacity(0.14)))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                Button { answer(prompt.id, .allow) } label: {
+                    Text("Allow")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 96, height: 28)
+                        .background(Capsule().fill(accent))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Permission request: \(prompt.title)")
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 struct NotchSwitch: View {

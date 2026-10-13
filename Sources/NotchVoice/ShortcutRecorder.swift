@@ -6,6 +6,7 @@ struct ShortcutRecorder: View {
     let title: String
     let shortcut: Shortcut?
     let setShortcut: @MainActor (Shortcut?) -> Bool
+    let pauseShortcut: @MainActor (Bool) -> Void
     @State private var keyMonitor: Any?
     @State private var isInUse = false
 
@@ -42,6 +43,7 @@ struct ShortcutRecorder: View {
 
     private func startRecording() {
         isInUse = false
+        pauseShortcut(true)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             MainActor.assumeIsolated { record(event) }
             return nil
@@ -65,5 +67,6 @@ struct ShortcutRecorder: View {
         guard let keyMonitor else { return }
         NSEvent.removeMonitor(keyMonitor)
         self.keyMonitor = nil
+        pauseShortcut(false)
     }
 }

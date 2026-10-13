@@ -14,7 +14,8 @@ struct NotchMetrics: Equatable {
 
     var closedSize: CGSize { CGSize(width: notch.width + 2 * Self.closedTopRadius, height: notch.height) }
     var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 58) }
-    var windowSize: CGSize { CGSize(width: openSize.width + 2 * Self.glowMargin, height: openSize.height + Self.glowMargin) }
+    var permissionSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 152) }
+    var windowSize: CGSize { CGSize(width: permissionSize.width + 2 * Self.glowMargin, height: permissionSize.height + Self.glowMargin) }
 
     @MainActor
     static func target() -> (screen: NSScreen, metrics: NotchMetrics)? {
@@ -34,6 +35,8 @@ struct NotchMetrics: Equatable {
 final class NotchState: ObservableObject {
     @Published var isOpen = false
     @Published var isPreviewingGlow = false
+    @Published var prompt: PermissionPrompt?
+    @Published var pendingCount = 0
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
@@ -50,11 +53,12 @@ final class NotchController {
     private var leaveStart: Date?
     private var isMenuOpen = false
     private var themeChanges: AnyCancellable?
+    private var permissionChanges: AnyCancellable?
     private var glowPreview = 0
 
-    init(voice: VoiceController, preferences: Preferences, openSettings: @escaping @MainActor () -> Void) {
+    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
-        let root = NotchRootView(state: state, voice: voice, preferences: preferences, openSettings: openSettings)
+        let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings)
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
         panel.contentView = host
@@ -65,6 +69,9 @@ final class NotchController {
         }
         themeChanges = preferences.$theme.dropFirst().removeDuplicates().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.previewGlow() }
+        }
+        permissionChanges = permissions.$queue.sink { [weak self] queue in
+            MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
         }
         let center = NotificationCenter.default
         observers = [
@@ -93,6 +100,11 @@ final class NotchController {
     private var hoverZone: CGRect {
         let notch = state.metrics.notch
         return CGRect(x: screenFrame.midX - notch.width / 2, y: screenFrame.maxY - notch.height, width: notch.width, height: notch.height + 8)
+    }
+
+    private var permissionZone: CGRect {
+        let size = state.metrics.permissionSize
+        return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
     }
 
     private var panelZone: CGRect {
@@ -124,6 +136,10 @@ final class NotchController {
     private func track() {
         let mouse = NSEvent.mouseLocation
         let now = Date()
+        if state.prompt != nil {
+            setInteractive(permissionZone.contains(mouse) || isMenuOpen)
+            return
+        }
         if state.isOpen {
             let inside = panelZone.contains(mouse) || isMenuOpen
             setInteractive(inside)
@@ -155,10 +171,26 @@ final class NotchController {
     }
 
     func flash() {
+        guard state.prompt == nil else { return }
         setOpen(true)
         // track() closes the panel 0.3 s after leaveStart unless the mouse is on it, so it stays up for 1.5 s.
         leaveStart = Date(timeIntervalSinceNow: 1.2)
         startTracking()
+    }
+
+    private func showPermission(_ prompt: PermissionPrompt?, count: Int) {
+        guard state.prompt?.id != prompt?.id || state.pendingCount != count else { return }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            state.prompt = prompt
+            state.pendingCount = count
+            if prompt != nil { state.isOpen = false }
+        }
+        if prompt != nil {
+            startTracking()
+        } else {
+            setInteractive(false)
+            track()
+        }
     }
 
     private func previewGlow() {

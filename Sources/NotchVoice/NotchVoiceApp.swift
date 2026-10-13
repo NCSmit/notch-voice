@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 @main
 @MainActor
@@ -21,6 +22,8 @@ enum NotchVoiceApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notch: NotchController?
     private var settings: SettingsWindowController?
+    private var permissions: PermissionCenter?
+    private var permissionSetting: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -33,9 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notch?.flash()
         }
         let preferences = Preferences(muteHotkey: muteHotkey)
+        let permissions = PermissionCenter()
+        permissions.isEnabled = { preferences.asksForPermission }
+        permissionSetting = preferences.$asksForPermission.dropFirst().filter { !$0 }.sink { _ in
+            MainActor.assumeIsolated { permissions.handBackAll() }
+        }
+        permissions.start()
+        self.permissions = permissions
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
     }

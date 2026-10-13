@@ -1,9 +1,9 @@
 #!/bin/bash
-# Installs the Claude Code voice hook and the NotchVoice notch app. Run with --uninstall to remove both.
+# Installs the Claude Code hooks and the NotchVoice notch app. Run with --uninstall to remove them.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-HOOK="$HOME/.claude/hooks/speak.py"
+HOOKS="$HOME/.claude/hooks"
 SETTINGS="$HOME/.claude/settings.json"
 APP="$HOME/Applications/NotchVoice.app"
 
@@ -21,23 +21,24 @@ if os.path.exists(path):
     with open(path) as f:
         settings = json.load(f)
     hooks = settings.get("hooks", {})
-    groups = []
-    for group in hooks.get("Stop", []):
-        group["hooks"] = [h for h in group.get("hooks", []) if "speak.py" not in h.get("command", "")]
-        if group["hooks"]:
-            groups.append(group)
-    if groups:
-        hooks["Stop"] = groups
-    else:
-        hooks.pop("Stop", None)
+    for event, script in (("Stop", "speak.py"), ("PermissionRequest", "notchvoice_permission.py")):
+        groups = []
+        for group in hooks.get(event, []):
+            group["hooks"] = [h for h in group.get("hooks", []) if script not in h.get("command", "")]
+            if group["hooks"]:
+                groups.append(group)
+        if groups:
+            hooks[event] = groups
+        else:
+            hooks.pop(event, None)
     if not hooks:
         settings.pop("hooks", None)
     with open(path, "w") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")
 EOF
-  rm -f "$HOOK" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
-  echo "NotchVoice and the voice hook are removed. Restart Claude Code."
+  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
+  echo "NotchVoice and its hooks are removed. Restart Claude Code."
   exit 0
 fi
 
@@ -46,13 +47,15 @@ if ! command -v swift >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$HOME/.claude/hooks"
-if [[ -f "$HOOK" ]] && ! cmp -s hook/speak.py "$HOOK"; then
-  cp "$HOOK" "$HOOK.bak"
-  echo "Saved your previous speak.py as $HOOK.bak"
-fi
-cp hook/speak.py "$HOOK"
-chmod +x "$HOOK"
+mkdir -p "$HOOKS"
+for script in speak.py notchvoice_permission.py; do
+  if [[ -f "$HOOKS/$script" ]] && ! cmp -s "hook/$script" "$HOOKS/$script"; then
+    cp "$HOOKS/$script" "$HOOKS/$script.bak"
+    echo "Saved your previous $script as $HOOKS/$script.bak"
+  fi
+  cp "hook/$script" "$HOOKS/$script"
+  chmod +x "$HOOKS/$script"
+done
 
 python3 - "$SETTINGS" <<'EOF'
 import json, os, shutil, sys
@@ -64,16 +67,26 @@ if os.path.exists(path):
         with open(path) as f:
             settings = json.load(f)
     except ValueError as error:
-        sys.exit(f"Could not read {path} ({error}). Add a Stop hook running 'python3 ~/.claude/hooks/speak.py' by hand.")
-stop = settings.setdefault("hooks", {}).setdefault("Stop", [])
-if not any("speak.py" in h.get("command", "") for group in stop for h in group.get("hooks", [])):
+        sys.exit(f"Could not read {path} ({error}). Add the hooks from the README by hand.")
+wanted = {
+    "Stop": {"type": "command", "command": "python3 ~/.claude/hooks/speak.py", "async": True, "timeout": 300},
+    "PermissionRequest": {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_permission.py", "timeout": 600},
+}
+hooks = settings.setdefault("hooks", {})
+added = []
+for event, hook in wanted.items():
+    script = hook["command"].rsplit("/", 1)[-1]
+    groups = hooks.setdefault(event, [])
+    if not any(script in h.get("command", "") for group in groups for h in group.get("hooks", [])):
+        groups.append({"hooks": [hook]} if event == "Stop" else {"matcher": "*", "hooks": [hook]})
+        added.append(event)
+if added:
     if os.path.exists(path):
         shutil.copy2(path, path + ".bak")
-    stop.append({"hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/speak.py", "async": True, "timeout": 300}]})
     with open(path, "w") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")
-    print(f"Added the voice hook to {path}")
+    print(f"Added the {' and '.join(added)} hook{'s' if len(added) > 1 else ''} to {path}")
 EOF
 
 ./build.sh --install

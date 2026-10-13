@@ -24,18 +24,23 @@ final class SettingsWindowController {
     }
 
     private func makeWindow() -> NSWindow {
-        let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(voice: voice, preferences: preferences)))
+        let controller = NSHostingController(rootView: SettingsView(voice: voice, preferences: preferences))
+        controller.sizingOptions = []
+        let window = NSWindow(contentViewController: controller)
         window.title = "NotchVoice Settings"
         window.styleMask = [.titled, .closable, .fullSizeContentView]
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
+        window.setContentSize(SettingsView.size)
         return window
     }
 }
 
 struct SettingsView: View {
+    static let size = CGSize(width: 470, height: 856)
+
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
     @State private var catalog = VoiceCatalog.load()
@@ -82,9 +87,21 @@ struct SettingsView: View {
                 Section("Glow") {
                     themePicker
                 }
+                Section {
+                    Toggle("Ask for permission in the notch", isOn: asksForPermission)
+                } header: {
+                    Text("Permissions")
+                } footer: {
+                    Text("Allow or deny Claude's requests from the notch. Claude's own prompt still works too, and the first answer counts.")
+                }
                 Section("General") {
+                    ShortcutRecorder(
+                        title: "Mute shortcut",
+                        shortcut: preferences.muteShortcut,
+                        setShortcut: preferences.setMuteShortcut,
+                        pauseShortcut: preferences.pauseMuteShortcut
+                    )
                     Toggle("Open at Login", isOn: opensAtLogin)
-                    ShortcutRecorder(title: "Mute shortcut", shortcut: preferences.muteShortcut, setShortcut: preferences.setMuteShortcut)
                 }
             }
             .formStyle(.grouped)
@@ -92,7 +109,7 @@ struct SettingsView: View {
             .scrollDisabled(true)
             footer
         }
-        .frame(width: 470, height: 733)
+        .frame(width: Self.size.width, height: Self.size.height)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -204,6 +221,10 @@ struct SettingsView: View {
 
     private var musicVolume: Binding<Double> {
         Binding(get: { voice.musicVolume }, set: { voice.setMusicVolume(($0 * 20).rounded() / 20) })
+    }
+
+    private var asksForPermission: Binding<Bool> {
+        Binding(get: { preferences.asksForPermission }, set: { preferences.setAsksForPermission($0) })
     }
 
     private var opensAtLogin: Binding<Bool> {

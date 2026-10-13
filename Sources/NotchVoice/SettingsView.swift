@@ -84,6 +84,7 @@ struct SettingsView: View {
                 }
                 Section("General") {
                     Toggle("Open at Login", isOn: opensAtLogin)
+                    ShortcutRecorder(title: "Mute shortcut", shortcut: preferences.muteShortcut, setShortcut: preferences.setMuteShortcut)
                 }
             }
             .formStyle(.grouped)
@@ -91,7 +92,7 @@ struct SettingsView: View {
             .scrollDisabled(true)
             footer
         }
-        .frame(width: 470, height: 692)
+        .frame(width: 470, height: 733)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 

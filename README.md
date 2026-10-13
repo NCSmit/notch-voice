@@ -47,6 +47,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Speed.** Set how fast replies are read, from 0.6× to 2×.
 - **Music volume.** Choose how loud Spotify and Apple Music stay while Claude speaks, from silent to unchanged.
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
+- **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
 
 <p align="center">
   <img src="docs/themes.png" alt="The six glow themes around a notch: Aurora, Ember, Ocean, Mint, Neon and Moonlight" width="820">

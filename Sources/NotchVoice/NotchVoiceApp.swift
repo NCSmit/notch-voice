@@ -28,7 +28,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let voice = VoiceController()
-        let preferences = Preferences()
+        let muteHotkey = Hotkey { [weak self] in
+            voice.setEnabled(!voice.isEnabled)
+            self?.notch?.flash()
+        }
+        let preferences = Preferences(muteHotkey: muteHotkey)
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
         notch = NotchController(voice: voice, preferences: preferences) { settings.show() }

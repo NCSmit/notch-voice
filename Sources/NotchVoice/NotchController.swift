@@ -154,6 +154,13 @@ final class NotchController {
         if !open { stopTracking() }
     }
 
+    func flash() {
+        setOpen(true)
+        // track() closes the panel 0.3 s after leaveStart unless the mouse is on it, so it stays up for 1.5 s.
+        leaveStart = Date(timeIntervalSinceNow: 1.2)
+        startTracking()
+    }
+
     private func previewGlow() {
         glowPreview += 1
         let preview = glowPreview

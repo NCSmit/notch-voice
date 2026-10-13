@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use the newest Xcode on the runner
+        run: |
+          sudo xcode-select --switch "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          swift --version
+
+      - name: Build the app
+        run: swift build -c release
+
+      - name: Test the app
+        run: swift test
+
+      - name: Test the hooks
+        run: python3 -m unittest discover -s hook/tests -v
+
+      - name: Check the shell scripts
+        run: bash -n install.sh && bash -n build.sh

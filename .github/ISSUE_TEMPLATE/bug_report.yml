@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in NotchVoice isn't working as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we reproduce it?
+      placeholder: |
+        1. Turn on voice replies
+        2. Ask Claude Code something
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: macOS 26.1, MacBook Pro 14-inch (M3)
+    validations:
+      required: true
+  - type: input
+    id: claude-code
+    attributes:
+      label: Claude Code version, and where you run it
+      placeholder: 2.1.300, desktop app
+    validations:
+      required: true
+  - type: input
+    id: notchvoice
+    attributes:
+      label: NotchVoice version
+      description: It's shown at the bottom of the settings window.
+      placeholder: "1.3"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Optional. Output of `log show --last 5m --info --predicate 'subsystem == \"local.notchvoice\"'`."
+      render: text

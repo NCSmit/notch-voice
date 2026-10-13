@@ -12,6 +12,7 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-hooks-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
 [![Speech](https://img.shields.io/badge/speech-100%25%20offline-2EA44F)](#how-it-works)
+[![CI](https://github.com/NCSmit/notch-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/NCSmit/notch-voice/actions/workflows/ci.yml)
 
 </div>
 
@@ -97,6 +98,8 @@ cd notch-voice
 ```
 
 Then restart Claude Code and hover over the notch.
+
+NotchVoice works wherever Claude Code runs on your Mac: in the terminal, in the Code tab of the Claude desktop app, and in IDE extensions. Regular Claude chats don't run hooks, so they aren't read aloud. You don't need to turn on any speech or dictation settings, because NotchVoice uses the voices built into macOS.
 
 > [!TIP]
 > The first time Claude speaks while Spotify or Music is open, macOS asks whether it may control that app. Allow it, so the music can get quieter.
@@ -188,3 +191,7 @@ Open System Settings → Privacy & Security → Automation. Allow Claude Code, o
 Download Premium or Enhanced voices in System Settings → Accessibility → Spoken Content → System Voice → Manage Voices. Then reopen NotchVoice's settings, and they're in the voice list.
 
 </details>
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how the pieces fit together, how to build and test, and how to open a pull request.

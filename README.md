@@ -51,6 +51,20 @@ When Claude Code needs your permission, the notch opens on its own and shows wha
 
 Questions Claude asks you, and plan approvals, stay in Claude Code because they need more than a yes or no.
 
+## Mute shortcut
+
+Set a keyboard shortcut once, then press it anywhere to turn voice replies on or off, even while another app is in front. The notch opens for a moment so you can see which way it went, and muting mid-reply stops the speech straight away.
+
+<p align="center">
+  <img src="docs/shortcut.png" alt="Pressing Option-Command-M switches voice replies in the notch from on to off" width="820">
+</p>
+
+To set it, open settings, click **Record** next to **Mute shortcut**, and press the keys you want. The shortcut needs at least one of ⌘, ⌥ or ⌃. Press Esc to cancel, and click ✕ to remove the shortcut. It doesn't need any extra macOS permissions.
+
+<p align="center">
+  <img src="docs/shortcut-settings.png" alt="The Mute shortcut row in NotchVoice settings, set to Option-Command-M" width="470">
+</p>
+
 ## Settings
 
 Click the cog in the notch to open settings. Changes apply to the next reply, with no restart needed.

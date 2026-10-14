@@ -10,14 +10,16 @@ Mute: touch ~/.claude/tts_off   Unmute: rm ~/.claude/tts_off   (NotchVoice sampl
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
+ORCHESTRATOR_FILE = os.path.join(HOME, ".claude", "notchvoice", "orchestrator.json")
+SESSIONS_DIR = os.path.join(HOME, ".claude", "notchvoice", "sessions")
 DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 MUSIC_APPS = ["Spotify", "Music"]
 
@@ -34,6 +36,17 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
+# Exists while the user is dictating (NotchVoice watches Wispr Flow and Apple dictation use the microphone).
+DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
+DICTATION_STALE_SECONDS = 15 * 60  # a flag this old was left behind by an app that quit mid-dictation
+DICTATION_MAX_WAIT = 270
+# Replies take turns: one ticket per waiting reply, named so they sort oldest first.
+QUEUE_DIR = os.path.join(user_temp_dir(), "claude_tts_queue")
+QUEUE_MAX_WAIT = 20 * 60  # the Stop hook's timeout is set above this in install.sh
+# A reply that is just this marker means "nothing to say": the orchestrator ends quiet check-ins with it.
+SILENT_MARKER = "\u2014"
+# The session_id of the reply currently speaking, so the notch can light up that session.
+SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
 
 def is_tool_result_only(content):
@@ -81,6 +94,34 @@ def load_settings():
     return settings if isinstance(settings, dict) else {}
 
 
+def read_json(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def orchestrator_session(settings):
+    """The session that speaks for all the others in orchestrator mode, or None when every session speaks."""
+    if not settings.get("orchestrator"):
+        return None
+    session = read_json(ORCHESTRATOR_FILE).get("session_id")
+    if not isinstance(session, str) or not session:
+        return None
+    if read_json(os.path.join(SESSIONS_DIR, f"{session}.json")).get("state") == "ended":
+        return None
+    return session
+
+
+def silenced(payload, settings):
+    orchestrator = orchestrator_session(settings)
+    session = payload.get("session_id")
+    # Samples and desktop chats carry no session, so they always speak.
+    return bool(orchestrator and session and session != orchestrator)
+
+
 def music_level(settings):
     level = settings.get("duck", os.environ.get("CLAUDE_TTS_DUCK", "0.5"))
     try:
@@ -107,16 +148,87 @@ def is_owner():
     return bool(owner) and owner[0] == os.getpid()
 
 
-def take_over():
-    """Stop the previous reply at any stage (still preparing or already speaking) and claim the voice."""
-    for pid in read_owner():
-        if pid == os.getpid():
-            continue
+def enqueue():
+    """Take a ticket. Replies speak one at a time, oldest first; a new reply never cuts off the one speaking."""
+    os.makedirs(QUEUE_DIR, exist_ok=True)
+    ticket = os.path.join(QUEUE_DIR, f"{time.time_ns():020d}-{os.getpid()}")
+    open(ticket, "w").close()
+    return ticket
+
+
+def queue_ahead_of(ticket):
+    """Tickets still waiting or speaking before this one, dropping any left behind by a hook that died."""
+    ahead = []
+    try:
+        names = sorted(os.listdir(QUEUE_DIR))
+    except OSError:
+        return ahead
+    mine = os.path.basename(ticket)
+    for name in names:
+        if name >= mine:
+            break
         try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
-    write_owner(os.getpid())
+            os.kill(int(name.rsplit("-", 1)[1]), 0)
+            ahead.append(name)
+        except PermissionError:
+            ahead.append(name)
+        except (OSError, ValueError, IndexError):
+            try:
+                os.remove(os.path.join(QUEUE_DIR, name))
+            except OSError:
+                pass
+    return ahead
+
+
+def others_waiting(ticket):
+    try:
+        return any(name != os.path.basename(ticket) for name in os.listdir(QUEUE_DIR))
+    except OSError:
+        return False
+
+
+def wait_for_turn(ticket):
+    deadline = time.time() + QUEUE_MAX_WAIT
+    while queue_ahead_of(ticket):
+        if time.time() > deadline:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def leave_queue(ticket):
+    try:
+        os.remove(ticket)
+    except OSError:
+        pass
+
+
+def user_is_dictating():
+    try:
+        return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_STALE_SECONDS
+    except OSError:
+        return False
+
+
+def wait_for_dictation_to_end():
+    """Never start talking over the user. Returns False if they are still dictating after a long wait."""
+    deadline = time.time() + DICTATION_MAX_WAIT
+    while user_is_dictating():
+        if time.time() > deadline:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def write_session(session_id):
+    try:
+        if isinstance(session_id, str) and session_id:
+            with open(SESSION_FILE, "w") as f:
+                f.write(session_id)
+        else:
+            os.remove(SESSION_FILE)
+    except OSError:
+        pass
 
 
 def osascript(script):
@@ -156,18 +268,24 @@ def restore_music():
         set_app_volume(app, volume)
 
 
+def is_silent(raw):
+    return raw.strip() in ("", SILENT_MARKER)
+
+
 def main():
     if os.path.exists(MUTE_FILE) and not os.environ.get("NOTCHVOICE_SAMPLE"):
         return
     payload = json.load(sys.stdin)
-    text = payload.get("last_assistant_message") or last_reply_from_transcript(
-        payload.get("transcript_path", "")
-    )
-    text = clean(text or "")
+    raw = payload.get("last_assistant_message") or last_reply_from_transcript(payload.get("transcript_path", ""))
+    if is_silent(raw or ""):
+        return
+    text = clean(raw)
     if not text:
         return
 
     settings = load_settings()
+    if silenced(payload, settings):
+        return
     cmd = ["say"]
     voice = settings.get("voice") or os.environ.get("CLAUDE_TTS_VOICE")
     if voice:
@@ -176,17 +294,31 @@ def main():
     if rate:
         cmd += ["-r", str(rate)]
 
-    take_over()
-    duck_music(music_level(settings))
-    if not is_owner():
-        return  # A newer reply took over while we were ducking; it restores the music.
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
-    write_owner(os.getpid(), proc.pid)
-    proc.communicate(text)
-    # A newer reply kills this process outright, so reaching here means we finished last.
-    if is_owner():
-        restore_music()
-        os.remove(OWNER_FILE)
+    ticket = enqueue()
+    try:
+        if not wait_for_turn(ticket) or not wait_for_dictation_to_end():
+            return
+        # Voice replies may have been switched off while this one waited.
+        if os.path.exists(MUTE_FILE) and not os.environ.get("NOTCHVOICE_SAMPLE"):
+            return
+        write_owner(os.getpid())
+        write_session(payload.get("session_id"))
+        duck_music(music_level(settings))
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+        write_owner(os.getpid(), proc.pid)
+        proc.communicate(text)
+    finally:
+        leave_queue(ticket)
+        # The last reply in the queue brings the music back; one still waiting keeps it down.
+        if not others_waiting(ticket):
+            restore_music()
+            if is_owner():
+                try:
+                    os.remove(OWNER_FILE)
+                except OSError:
+                    pass
+            write_session(None)
+
 
 if __name__ == "__main__":
     main()

@@ -12,6 +12,7 @@ import select
 import socket
 import sys
 import tempfile
+import time
 
 DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 # These need a real answer in Claude's own UI, not a yes or no.
@@ -31,6 +32,10 @@ def user_temp_dir():
 
 
 SOCKET = os.path.join(user_temp_dir(), "notchvoice.sock")
+# How long to keep trying when NotchVoice isn't reachable (it may be restarting).
+CONNECT_GRACE = 6
+# One line per permission request and what happened to it, for diagnosing missed cards.
+LOG_FILE = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "permissions.log")
 
 
 def trimmed(value):
@@ -102,38 +107,77 @@ class Transcript:
 
 
 def ask_notch(request, transcript):
+    """Show the request in the notch and wait for the answer. Returns (decision, outcome) where decision is
+    "allow", "deny" or None, and outcome says what happened, for the log."""
+    deadline = time.time() + CONNECT_GRACE
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(SOCKET)
+                connection.sendall((json.dumps(request) + "\n").encode())
+                reply = b""
+                while not reply.endswith(b"\n"):
+                    readable, _, _ = select.select([connection], [], [], 0.5)
+                    if readable:
+                        chunk = connection.recv(4096)
+                        if not chunk:
+                            break  # the app went away mid-wait (restart or crash): try again below
+                        reply += chunk
+                    elif transcript.answered_elsewhere():
+                        return None, "answered in Claude"
+                if reply.endswith(b"\n"):
+                    decision = json.loads(reply).get("decision")
+                    return (decision if decision in ("allow", "deny") else None), f"notch: {decision}"
+        except OSError:
+            pass  # not running (yet): NotchVoice may be restarting
+        except ValueError:
+            return None, "bad reply"
+        if transcript.answered_elsewhere():
+            return None, "answered in Claude"
+        if time.time() > deadline and attempts > 1:
+            return None, "notch app not reachable"
+        time.sleep(0.5)
+        # After a dropped connection (NotchVoice restarted), give the app the same grace to come back.
+        if attempts == 1:
+            deadline = max(deadline, time.time() + CONNECT_GRACE)
+
+
+def log_request(payload, outcome, started):
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.connect(SOCKET)
-            connection.sendall((json.dumps(request) + "\n").encode())
-            reply = b""
-            while not reply.endswith(b"\n"):
-                readable, _, _ = select.select([connection], [], [], 0.5)
-                if readable:
-                    chunk = connection.recv(4096)
-                    if not chunk:
-                        return None
-                    reply += chunk
-                elif transcript.answered_elsewhere():
-                    return None
-        return json.loads(reply).get("decision")
-    except (OSError, ValueError):
-        return None
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 512 * 1024:
+            os.replace(LOG_FILE, LOG_FILE + ".1")
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps({
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "session": payload.get("session_id"),
+                "mode": payload.get("permission_mode"),
+                "tool": payload.get("tool_name"),
+                "outcome": outcome,
+                "seconds": round(time.time() - started, 1),
+            }) + "\n")
+    except OSError:
+        pass
 
 
 def main():
+    started = time.time()
     payload = json.load(sys.stdin)
     tool = payload.get("tool_name", "")
     if tool in SKIPPED_TOOLS:
+        log_request(payload, "skipped: answered in Claude's own UI", started)
         return
     tool_input = payload.get("tool_input") or {}
     transcript = Transcript(payload.get("transcript_path"), tool, tool_input)
-    decision = ask_notch({
+    decision, outcome = ask_notch({
         "tool_name": tool,
         "tool_input": trimmed(tool_input),
         "cwd": payload.get("cwd"),
         "session_id": payload.get("session_id"),
     }, transcript)
+    log_request(payload, outcome, started)
     if decision == "allow":
         result = {"behavior": "allow"}
     elif decision == "deny":

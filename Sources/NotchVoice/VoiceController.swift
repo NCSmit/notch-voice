@@ -10,18 +10,23 @@ final class VoiceController: ObservableObject {
 
     @Published private(set) var isEnabled = true
     @Published private(set) var isSpeaking = false
+    @Published private(set) var speakingSession: String?
     @Published private(set) var voiceID: String?
     @Published private(set) var voiceName = "System Voice"
     @Published private(set) var systemVoiceLabel = "System Voice"
     @Published private(set) var speed = 1.0
     @Published private(set) var musicVolume = 0.5
     @Published private(set) var keepsRepliesShort = true
+    /// Only the session that ran /orchestrator speaks; it reports on the others.
+    @Published private(set) var isOrchestratorMode = false
 
     // The contract of ~/.claude/hooks/speak.py: it stays silent while the mute file exists, takes its voice, rate
     // and music level from the settings file, and writes "<hook pid> <say pid>" to the owner file while it speaks.
     private let muteFile = URL.homeDirectory.appending(path: ".claude/tts_off")
     private let settingsFile = URL.homeDirectory.appending(path: ".claude/tts_settings.json")
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
+    // The session_id of the reply being spoken, written by the hook next to the owner file.
+    private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
@@ -64,6 +69,11 @@ final class VoiceController: ObservableObject {
         saveSettings()
     }
 
+    func setOrchestratorMode(_ enabled: Bool) {
+        isOrchestratorMode = enabled
+        saveSettings()
+    }
+
     func loadSettings() {
         let settings = (try? Data(contentsOf: settingsFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
@@ -74,6 +84,7 @@ final class VoiceController: ObservableObject {
         speed = (settings["rate"] as? Double).map { ($0 / Self.baseRate * 10).rounded() / 10 } ?? 1
         musicVolume = settings["duck"] as? Double ?? 0.5
         keepsRepliesShort = settings["brief"] as? Bool ?? true
+        isOrchestratorMode = settings["orchestrator"] as? Bool ?? false
     }
 
     func playSample() {
@@ -112,11 +123,13 @@ final class VoiceController: ObservableObject {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")
         }
+        let session = speaking ? (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        if speakingSession != session { speakingSession = session }
         setPolling(pids.contains { Self.isAlive($0) })
     }
 
     private func saveSettings() {
-        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort]
+        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort, "orchestrator": isOrchestratorMode]
         if let voiceID { settings["voice"] = voiceID }
         if abs(speed - 1) > 0.01 { settings["rate"] = Int((Self.baseRate * speed).rounded()) }
         guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) else { return }

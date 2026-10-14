@@ -8,12 +8,17 @@ private let log = Logger(subsystem: "local.notchvoice", category: "permissions")
 final class PermissionServer: @unchecked Sendable {
     static let socketPath = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice.sock").path
 
-    private let queue = DispatchQueue(label: "local.notchvoice.permissions")
+    private let path: String
+    private let queue: DispatchQueue
     private let onRequest: @Sendable (PermissionConnection, Data) -> Void
     private let onClose: @Sendable (PermissionConnection) -> Void
     private var listener: DispatchSourceRead?
 
-    init(onRequest: @escaping @Sendable (PermissionConnection, Data) -> Void, onClose: @escaping @Sendable (PermissionConnection) -> Void) {
+    /// One request line in, one `{"decision": …}` line out. Also used by the speech player's socket.
+    init(path: String = PermissionServer.socketPath, label: String = "local.notchvoice.permissions",
+         onRequest: @escaping @Sendable (PermissionConnection, Data) -> Void, onClose: @escaping @Sendable (PermissionConnection) -> Void) {
+        self.path = path
+        self.queue = DispatchQueue(label: label)
         self.onRequest = onRequest
         self.onClose = onClose
     }
@@ -23,7 +28,7 @@ final class PermissionServer: @unchecked Sendable {
     }
 
     private func listen() {
-        let path = Self.socketPath
+        let path = self.path
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return log.error("socket() failed: \(errno)") }
         var address = sockaddr_un()

@@ -13,9 +13,27 @@ struct NotchMetrics: Equatable {
     static let glowMargin: CGFloat = 60
 
     var closedSize: CGSize { CGSize(width: notch.width + 2 * Self.closedTopRadius, height: notch.height) }
-    var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 58) }
+    static let voiceRowHeight: CGFloat = 58
+    static let sessionRowHeight: CGFloat = 38
+    static let sessionListPadding: CGFloat = 12
+    static let tabBarHeight: CGFloat = 26
+
+    func openSize(rows: Int, hasTabs: Bool = false) -> CGSize {
+        let list = rows > 0 ? CGFloat(rows) * Self.sessionRowHeight + Self.sessionListPadding : 0
+        let wide = rows > 0 || hasTabs
+        return CGSize(
+            width: max(wide ? 440 : 360, notch.width + (wide ? 250 : 170)),
+            height: notch.height + Self.voiceRowHeight + (hasTabs ? Self.tabBarHeight : 0) + list
+        )
+    }
     var permissionSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 152) }
-    var windowSize: CGSize { CGSize(width: permissionSize.width + 2 * Self.glowMargin, height: permissionSize.height + Self.glowMargin) }
+    var windowSize: CGSize {
+        let tallest = openSize(rows: max(ClaudeSession.maxShown, TrackedPR.maxShown), hasTabs: true)
+        return CGSize(
+            width: max(permissionSize.width, tallest.width) + 2 * Self.glowMargin,
+            height: max(permissionSize.height, tallest.height) + Self.glowMargin
+        )
+    }
 
     @MainActor
     static func target() -> (screen: NSScreen, metrics: NotchMetrics)? {
@@ -37,6 +55,16 @@ final class NotchState: ObservableObject {
     @Published var isPreviewingGlow = false
     @Published var prompt: PermissionPrompt?
     @Published var pendingCount = 0
+    @Published var sessions: [ClaudeSession] = []
+    @Published var orchestratorID: String?
+    @Published var prs: [TrackedPR] = []
+    @Published var tab: NotchTab = .sessions
+
+    var hasTabs: Bool { !prs.isEmpty }
+    var shownTab: NotchTab { hasTabs ? tab : .sessions }
+    var openSize: CGSize {
+        metrics.openSize(rows: shownTab == .sessions ? sessions.count : prs.count, hasTabs: hasTabs)
+    }
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
@@ -54,10 +82,17 @@ final class NotchController {
     private var isMenuOpen = false
     private var themeChanges: AnyCancellable?
     private var permissionChanges: AnyCancellable?
+    private var sessionChanges: AnyCancellable?
+    private var orchestratorChanges: AnyCancellable?
+    private var prChanges: AnyCancellable?
     private var glowPreview = 0
+    private let preferences: Preferences
+    private var reopenAfterPrompt = false
+    private var pinChanges: AnyCancellable?
 
-    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, openSettings: @escaping @MainActor () -> Void) {
+    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
+        self.preferences = preferences
         let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings)
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
@@ -67,11 +102,28 @@ final class NotchController {
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             MainActor.assumeIsolated { self?.mouseMoved() }
         }
+        pinChanges = preferences.$isPanelPinned.dropFirst().sink { [weak self] _ in
+            // Unpinning with the mouse elsewhere should collapse the panel straight away.
+            MainActor.assumeIsolated { self?.startTracking() }
+        }
         themeChanges = preferences.$theme.dropFirst().removeDuplicates().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.previewGlow() }
         }
         permissionChanges = permissions.$queue.sink { [weak self] queue in
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
+        }
+        prChanges = tracker.$prs.sink { [weak self] list in
+            MainActor.assumeIsolated {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { self?.state.prs = list }
+            }
+        }
+        orchestratorChanges = sessions.$orchestratorID.sink { [weak self] id in
+            MainActor.assumeIsolated { self?.state.orchestratorID = id }
+        }
+        sessionChanges = sessions.$sessions.sink { [weak self] list in
+            MainActor.assumeIsolated {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { self?.state.sessions = list }
+            }
         }
         let center = NotificationCenter.default
         observers = [
@@ -108,12 +160,16 @@ final class NotchController {
     }
 
     private var panelZone: CGRect {
-        let size = state.metrics.openSize
+        let size = state.openSize
         return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
     }
 
     private func mouseMoved() {
-        if state.isOpen || hoverZone.contains(NSEvent.mouseLocation) { startTracking() }
+        if state.isOpen, state.prompt == nil, preferences.isPanelPinned {
+            track()
+        } else if state.isOpen || hoverZone.contains(NSEvent.mouseLocation) {
+            startTracking()
+        }
     }
 
     private func startTracking() {
@@ -143,6 +199,12 @@ final class NotchController {
         if state.isOpen {
             let inside = panelZone.contains(mouse) || isMenuOpen
             setInteractive(inside)
+            if preferences.isPanelPinned {
+                // A pinned panel never closes, so drop the 30 Hz timer; mouse-move events keep it taking clicks
+                // only while it's under the mouse.
+                stopTracking()
+                return
+            }
             if inside {
                 leaveStart = nil
                 return
@@ -180,12 +242,17 @@ final class NotchController {
 
     private func showPermission(_ prompt: PermissionPrompt?, count: Int) {
         guard state.prompt?.id != prompt?.id || state.pendingCount != count else { return }
+        if prompt != nil, state.prompt == nil { reopenAfterPrompt = state.isOpen && preferences.isPanelPinned }
         withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
             state.prompt = prompt
             state.pendingCount = count
             if prompt != nil { state.isOpen = false }
         }
         if prompt != nil {
+            startTracking()
+        } else if reopenAfterPrompt {
+            reopenAfterPrompt = false
+            setOpen(true)
             startTracking()
         } else {
             setInteractive(false)

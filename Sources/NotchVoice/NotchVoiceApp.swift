@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationChanges: AnyCancellable?
     private var handsFree: HandsFreeController?
     private var player: SpeechPlayer?
+    private var questions: QuestionCenter?
+    private var notices: NoticeCenter?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -65,6 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         permissions.start()
         self.permissions = permissions
+        let questions = QuestionCenter()
+        questions.start()
+        self.questions = questions
+        let notices = NoticeCenter()
+        notices.start()
+        self.notices = notices
         let sessions = SessionStore()
         sessions.start()
         self.sessions = sessions
@@ -73,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.tracker = tracker
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker, handsFree: handsFree) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker, handsFree: handsFree, questions: questions, notices: notices) { settings.show() }
         handsFree.surface = notch
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()

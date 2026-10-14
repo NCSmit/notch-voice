@@ -31,6 +31,8 @@ final class WakeWordListener {
     var onSkip: (Bool) -> Void = { _ in }
     /// Whether a reply is being read aloud right now; spoken skips only count then.
     var isSpeaking: () -> Bool = { false }
+    /// A whole phrase that may answer the question card on screen; returns true when it did.
+    var answerQuestion: (String) -> Bool = { _ in false }
 
     private(set) var isRunning = false
     private(set) var mode = Mode.wake
@@ -286,6 +288,10 @@ final class WakeWordListener {
         heardCount += 1
         switch mode {
         case .wake:
+            if answerQuestion(text) {
+                startRequest()  // clear the phrase so it isn't acted on twice
+                return
+            }
             if isSpeaking(), let all = Self.skipCommand(text) {
                 pendingWake?.cancel()
                 pendingWake = nil
@@ -357,6 +363,19 @@ final class WakeWordListener {
 
     nonisolated static func isBluetooth(_ device: AVCaptureDevice) -> Bool {
         [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE].contains(UInt32(bitPattern: device.transportType))
+    }
+
+    /// Whether the sound goes to headphones (anything but the built-in speakers), so the mic can't hear it.
+    nonisolated static func outputIsHeadphones() -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var device = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else { return false }
+        var transport: UInt32 = 0
+        var transportSize = UInt32(MemoryLayout<UInt32>.size)
+        var transportAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectGetPropertyData(device, &transportAddress, 0, nil, &transportSize, &transport)
+        return transport != kAudioDeviceTransportTypeBuiltIn
     }
 
     /// The built-in mic, or else another wired (non-Bluetooth, non-virtual) one.

@@ -29,6 +29,7 @@ permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
 sessions = load("notchvoice_sessions")
+question = load("notchvoice_question")
 
 
 def run_main(module, payload):
@@ -585,3 +586,52 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(speak.is_silent("  \u2014\n"))
         self.assertTrue(speak.is_silent(""))
         self.assertFalse(speak.is_silent("\u2014 nothing new, all sessions idle"))
+
+
+class QuestionHookTests(unittest.TestCase):
+    QUESTIONS = [{"question": "Which database?", "header": "DB", "multiSelect": False,
+                  "options": [{"label": "Postgres", "description": ""}, {"label": "SQLite", "description": ""}]}]
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patcher = mock.patch.object(question, "LOG_FILE", os.path.join(self.dir.name, "log"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def payload(self):
+        return {"tool_name": "AskUserQuestion", "tool_input": {"questions": self.QUESTIONS}, "session_id": "s"}
+
+    def test_answers_from_the_notch_go_back_as_the_tool_input(self):
+        with mock.patch.object(question, "ask_notch", return_value=({"Which database?": "SQLite"}, "answered in the notch")):
+            output = json.loads(run_main(question, self.payload()))["hookSpecificOutput"]
+        self.assertEqual(output["hookEventName"], "PreToolUse")
+        self.assertEqual(output["permissionDecision"], "allow")
+        self.assertEqual(output["updatedInput"]["answers"], {"Which database?": "SQLite"})
+        self.assertEqual(output["updatedInput"]["questions"], self.QUESTIONS)
+
+    def test_handing_back_or_no_app_leaves_the_question_to_claude(self):
+        with mock.patch.object(question, "ask_notch", return_value=(None, "handed back to Claude")):
+            self.assertEqual(run_main(question, self.payload()), "")
+        with mock.patch.object(question, "SOCKET", os.path.join(self.dir.name, "missing.sock")):
+            self.assertEqual(run_main(question, self.payload()), "")
+
+    def test_other_tools_are_ignored(self):
+        with mock.patch.object(question, "ask_notch") as ask:
+            self.assertEqual(run_main(question, {"tool_name": "Bash", "tool_input": {}}), "")
+        ask.assert_not_called()
+
+
+class BlockedNoticeTests(unittest.TestCase):
+    def test_an_auto_mode_block_leaves_a_notice_for_the_notch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(sessions, "SESSIONS_DIR", os.path.join(folder, "s")), \
+                 mock.patch.object(sessions, "NOTICES_DIR", os.path.join(folder, "n")):
+                os.makedirs(os.path.join(folder, "s"))
+                run_main(sessions, {"hook_event_name": "PermissionDenied", "session_id": "abc", "cwd": "/x/demo",
+                                    "tool_name": "Bash", "tool_input": {"command": "rm -rf build", "description": "Clean"}})
+                files = os.listdir(os.path.join(folder, "n"))
+                self.assertEqual(len(files), 1)
+                with open(os.path.join(folder, "n", files[0])) as f:
+                    notice = json.load(f)
+        self.assertEqual((notice["project"], notice["title"], notice["detail"]), ("demo", "Running Clean", "rm -rf build"))

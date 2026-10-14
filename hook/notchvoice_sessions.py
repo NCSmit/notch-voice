@@ -32,7 +32,10 @@ STATES = {
     "PermissionRequest": "waiting",
     "Stop": "idle",
     "SessionEnd": "ended",
+    "PermissionDenied": "working",  # auto mode blocked an action; the session carries on
 }
+# Auto-mode blocks, one small JSON file each, shown briefly in the notch.
+NOTICES_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "notices")
 
 
 def shorten(text, limit):
@@ -111,6 +114,8 @@ def updated_status(previous, payload, now):
         status["activity"] = shorten(("Needs you: " if event == "PermissionRequest" else "") + activity, ACTIVITY_LENGTH)
     elif event == "PostToolUse":
         status["activity"] = "Thinking"
+    elif event == "PermissionDenied":
+        status["activity"] = shorten("Blocked by auto mode: " + activity_for(payload.get("tool_name", ""), payload.get("tool_input")), ACTIVITY_LENGTH)
     elif event == "Stop":
         summary = first_sentence(payload.get("last_assistant_message") or "")
         status["activity"] = shorten(summary, ACTIVITY_LENGTH) if summary else "Done"
@@ -141,6 +146,26 @@ def main():
         pass
     if payload["hook_event_name"] == "SessionStart" and payload.get("source") == "compact":
         restore_handoff(session)
+    if payload["hook_event_name"] == "PermissionDenied":
+        write_notice(payload, session, now)
+
+
+def write_notice(payload, session, now):
+    tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    detail = tool_input.get("command") or tool_input.get("file_path") or tool_input.get("url") or ""
+    notice = {
+        "session_id": session,
+        "project": os.path.basename((payload.get("cwd") or "").rstrip("/")),
+        "title": activity_for(payload.get("tool_name", ""), tool_input),
+        "detail": shorten(str(detail), 160),
+        "reason": shorten(str(payload.get("reason") or ""), 160),
+        "at": now,
+    }
+    try:
+        os.makedirs(NOTICES_DIR, exist_ok=True)
+        write(os.path.join(NOTICES_DIR, f"{int(now * 1000)}-{session}.json"), notice)
+    except OSError:
+        pass
 
 
 def restore_handoff(session):

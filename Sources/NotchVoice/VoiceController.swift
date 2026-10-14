@@ -94,6 +94,23 @@ final class VoiceController: ObservableObject {
         refresh()
     }
 
+    /// Read something aloud through the normal reply queue (respects mute and dictation), e.g. a question card.
+    func announce(_ text: String) {
+        guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return }
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/env")
+        process.arguments = ["python3", hookScript.path]
+        let input = Pipe()
+        process.standardInput = input
+        do {
+            try process.run()
+            input.fileHandleForWriting.write(payload)
+            try input.fileHandleForWriting.close()
+        } catch {
+            log.error("could not read the text aloud: \(error.localizedDescription)")
+        }
+    }
+
     func setVoice(_ id: String?) {
         voiceID = id
         voiceName = id.flatMap(VoiceCatalog.displayName(of:)) ?? systemVoiceLabel

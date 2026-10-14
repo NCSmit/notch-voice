@@ -15,6 +15,8 @@ protocol CaptureSurface: AnyObject {
     func setCaptureStatus(_ status: String)
     func setCaptureTranscript(_ transcript: String)
     func hideCapture()
+    /// A spoken answer to a question card in the notch; true when it was one.
+    func handleSpokenAnswer(_ text: String) -> Bool
 }
 
 /// "Hey orchestrator" → Wispr Flow dictates into a field in the notch → "send it" (or a pause) → the text is typed
@@ -55,6 +57,11 @@ final class HandsFreeController: ObservableObject {
         self.voice = voice
         listener.isSpeaking = { [weak voice] in voice?.isSpeaking ?? false }
         listener.onSkip = { [weak voice] all in voice?.skip(all: all) }
+        listener.answerQuestion = { [weak self, weak voice] text in
+            // While a question is read aloud through speakers, the mic would hear it; only answer then on headphones.
+            if voice?.isSpeaking == true, !WakeWordListener.outputIsHeadphones() { return false }
+            return self?.surface?.handleSpokenAnswer(text) ?? false
+        }
         // A reply starting or ending can change which mic should listen (see chosenMicrophone).
         speakingChanges = voice.$isSpeaking.removeDuplicates().dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.followUser() } }

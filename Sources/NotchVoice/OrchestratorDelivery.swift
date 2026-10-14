@@ -156,6 +156,8 @@ enum OrchestratorDelivery {
         if result?.stringValue != "ok" { throw Failure.scriptFailed("its tab wasn't found") }
     }
 
+    static func tty(of pid: pid_t) -> String? { ttyOf(pid) }
+
     private static func ttyOf(_ pid: pid_t) -> String? {
         let output = run("/bin/ps", ["-o", "tty=", "-p", String(pid)]).trimmingCharacters(in: .whitespacesAndNewlines)
         return output.isEmpty || output == "??" ? nil : "/dev/" + output

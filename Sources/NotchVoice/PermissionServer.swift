@@ -108,6 +108,18 @@ final class PermissionConnection: @unchecked Sendable, Identifiable {
         source.resume()
     }
 
+    /// Reply with any JSON object (the question card sends its answers this way).
+    func reply(json: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return reply("ask") }
+        queue.async { [self] in
+            guard !isFinished else { return }
+            isFinished = true
+            let line = Array(data) + [UInt8(ascii: "\n")]
+            _ = line.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
+            source?.cancel()
+        }
+    }
+
     func reply(_ decision: String) {
         queue.async { [self] in
             guard !isFinished else { return }

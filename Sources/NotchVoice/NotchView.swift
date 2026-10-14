@@ -13,9 +13,16 @@ struct NotchRootView: View {
     let openSettings: @MainActor () -> Void
     let sendCapture: @MainActor () -> Void
     let cancelCapture: @MainActor () -> Void
+    let questionActions: QuestionActions
+    let noticeActions: (go: @MainActor () -> Void, dismiss: @MainActor () -> Void)
 
     var body: some View {
         NotchView(
+            question: state.question,
+            questionProgress: state.questionProgress,
+            questionActions: questionActions,
+            notice: state.notice,
+            noticeActions: noticeActions,
             capture: state.capture,
             captureText: $state.captureText,
             captureFocus: state.captureFocus,
@@ -25,7 +32,7 @@ struct NotchRootView: View {
             isOpen: state.isOpen,
             isEnabled: voice.isEnabled,
             isSpeaking: voice.isSpeaking,
-            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil || state.capture != nil,
+            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil || state.capture != nil || state.question != nil,
             theme: preferences.theme,
             prompt: state.prompt,
             pendingCount: state.pendingCount,
@@ -49,7 +56,21 @@ struct NotchRootView: View {
     }
 }
 
+struct QuestionActions {
+    let toggle: @MainActor (Int) -> Void
+    let setOther: @MainActor (String) -> Void
+    let back: @MainActor () -> Void
+    let next: @MainActor () -> Void
+    let handBack: @MainActor () -> Void
+    let goToSession: @MainActor () -> Void
+}
+
 struct NotchView: View {
+    let question: QuestionPrompt?
+    let questionProgress: QuestionProgress
+    let questionActions: QuestionActions
+    let notice: BlockedNotice?
+    let noticeActions: (go: @MainActor () -> Void, dismiss: @MainActor () -> Void)
     let capture: CaptureState?
     @Binding var captureText: String
     let captureFocus: Int
@@ -81,12 +102,14 @@ struct NotchView: View {
     let openSettings: @MainActor () -> Void
 
     var body: some View {
-        let isExpanded = isOpen || prompt != nil || capture != nil
+        let isExpanded = isOpen || prompt != nil || capture != nil || question != nil || notice != nil
         let rows = tab == .sessions ? sessions.count : prs.count
         let showsIndicator = handsFree != .off
         let size = prompt != nil ? metrics.permissionSize
+            : question != nil ? metrics.questionSize
             : isOpen ? metrics.openSize(rows: rows, hasTabs: !prs.isEmpty, capture: capture != nil)
             : capture != nil ? metrics.captureSize
+            : notice != nil ? metrics.noticeSize
             : showsIndicator ? metrics.closedSizeWithIndicator : metrics.closedSize
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
@@ -110,6 +133,21 @@ struct NotchView: View {
                     .padding(.trailing, NotchMetrics.closedTopRadius)
                     .transition(.opacity)
             }
+            if prompt == nil, let question {
+                QuestionCard(
+                    prompt: question, progress: questionProgress, accent: theme.accent,
+                    toggle: questionActions.toggle, setOther: questionActions.setOther, back: questionActions.back,
+                    next: questionActions.next, handBack: questionActions.handBack, goToSession: questionActions.goToSession
+                )
+                .id(question.id)
+                .padding(.top, metrics.notch.height)
+                .transition(.opacity.animation(.easeOut(duration: 0.2).delay(0.1)))
+            } else if prompt == nil, !isOpen, capture == nil, let notice {
+                NoticeCard(notice: notice, goToSession: noticeActions.go, dismiss: noticeActions.dismiss)
+                    .padding(.top, metrics.notch.height)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .transition(.opacity)
+            }
             if let prompt {
                 PermissionCard(prompt: prompt, pendingCount: pendingCount, accent: theme.accent, answer: answer)
                     .id(prompt.id)
@@ -118,6 +156,8 @@ struct NotchView: View {
                         insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                         removal: .opacity.animation(.easeIn(duration: 0.1))
                     ))
+            } else if question != nil {
+                EmptyView()
             } else if isOpen {
                 VStack(spacing: 0) {
                     VoicePanel(
@@ -154,6 +194,8 @@ struct NotchView: View {
                     insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                     removal: .opacity.animation(.easeIn(duration: 0.1))
                 ))
+            } else if notice != nil, capture == nil {
+                EmptyView()
             } else if let capture {
                 captureField(capture)
                     .padding(.top, metrics.notch.height)

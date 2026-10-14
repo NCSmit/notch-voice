@@ -26,6 +26,9 @@ struct NotchMetrics: Equatable {
     static let tabBarHeight: CGFloat = 26
     static let captureHeight: CGFloat = 86
 
+    var questionSize: CGSize { CGSize(width: max(540, notch.width + 330), height: notch.height + 272) }
+    var noticeSize: CGSize { CGSize(width: max(520, notch.width + 310), height: notch.height + 50) }
+
     /// The notch popped out with only the capture field, while hands-free waits for a dictated message.
     var captureSize: CGSize { CGSize(width: max(460, notch.width + 270), height: notch.height + Self.captureHeight) }
 
@@ -41,8 +44,8 @@ struct NotchMetrics: Equatable {
     var windowSize: CGSize {
         let tallest = openSize(rows: max(ClaudeSession.maxShown, TrackedPR.maxShown), hasTabs: true, capture: true)
         return CGSize(
-            width: max(permissionSize.width, tallest.width) + 2 * Self.glowMargin,
-            height: max(permissionSize.height, tallest.height) + Self.glowMargin
+            width: max(permissionSize.width, tallest.width, questionSize.width) + 2 * Self.glowMargin,
+            height: max(permissionSize.height, tallest.height, questionSize.height) + Self.glowMargin
         )
     }
 
@@ -75,6 +78,9 @@ final class NotchState: ObservableObject {
     @Published var capture: CaptureState?
     @Published var captureText = ""
     @Published var captureFocus = 0
+    @Published var question: QuestionPrompt?
+    @Published var questionProgress = QuestionProgress(count: 0)
+    @Published var notice: BlockedNotice?
     @Published var tab: NotchTab = .sessions
 
     var hasTabs: Bool { !prs.isEmpty }
@@ -110,18 +116,36 @@ final class NotchController: CaptureSurface {
     private var handsFreeChanges: AnyCancellable?
     private weak var handsFree: HandsFreeController?
     private var headphoneMicChanges: AnyCancellable?
+    private var questionChanges: AnyCancellable?
+    private var noticeChanges: AnyCancellable?
+    private let questions: QuestionCenter
+    private let notices: NoticeCenter
     private var glowPreview = 0
     private let preferences: Preferences
     private var reopenAfterPrompt = false
     private var pinChanges: AnyCancellable?
 
-    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, handsFree: HandsFreeController, openSettings: @escaping @MainActor () -> Void) {
+    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, handsFree: HandsFreeController, questions: QuestionCenter, notices: NoticeCenter, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
+        self.questions = questions
+        self.notices = notices
         self.preferences = preferences
         let root = NotchRootView(
             state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings,
             sendCapture: { [weak handsFree] in handsFree?.sendNow() },
-            cancelCapture: { [weak handsFree] in handsFree?.cancelFromField() }
+            cancelCapture: { [weak handsFree] in handsFree?.cancelFromField() },
+            questionActions: QuestionActions(
+                toggle: { [weak self] in self?.toggleOption($0) },
+                setOther: { [weak self] in self?.state.questionProgress.other[self?.state.questionProgress.index ?? 0] = $0 },
+                back: { [weak self] in self?.previousQuestion() },
+                next: { [weak self] in self?.nextQuestion() },
+                handBack: { [weak self] in self?.handBackQuestion() },
+                goToSession: { [weak self] in SessionNavigator.go(to: self?.state.question?.sessionID) }
+            ),
+            noticeActions: (
+                go: { [weak self] in SessionNavigator.go(to: self?.state.notice?.sessionID); self?.notices.dismiss() },
+                dismiss: { [weak self] in self?.notices.dismiss() }
+            )
         )
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
@@ -142,6 +166,16 @@ final class NotchController: CaptureSurface {
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
         }
         self.handsFree = handsFree
+        questionChanges = questions.$queue.sink { [weak self] queue in
+            MainActor.assumeIsolated { self?.showQuestion(queue.first) }
+        }
+        noticeChanges = notices.$current.sink { [weak self] notice in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { self.state.notice = notice }
+                self.setInteractive(notice != nil || self.needsMouse)
+            }
+        }
         headphoneMicChanges = handsFree.$onHeadphones.sink { [weak self] on in
             MainActor.assumeIsolated { self?.state.listensOnHeadphones = on }
         }
@@ -227,6 +261,101 @@ final class NotchController: CaptureSurface {
         leaveStart = nil
     }
 
+    // MARK: Questions
+
+    private var needsMouse: Bool { state.prompt != nil || state.question != nil || state.capture != nil }
+
+    private func showQuestion(_ prompt: QuestionPrompt?) {
+        guard prompt?.id != state.question?.id else { return }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            state.question = prompt
+            state.questionProgress = QuestionProgress(count: prompt?.questions.count ?? 0)
+            if prompt != nil { state.isOpen = false }
+        }
+        // Key (but not active) while a question is up, so "Other…" can be typed into without stealing focus.
+        panel.allowsKey = prompt != nil || state.capture != nil
+        setInteractive(needsMouse)
+        if prompt != nil {
+            announceQuestion()
+        } else {
+            startTracking()
+        }
+    }
+
+    private func announceQuestion() {
+        guard let prompt = state.question else { return }
+        let question = prompt.questions[state.questionProgress.index]
+        let numbers = ["one", "two", "three", "four"]
+        let options = question.options.prefix(4).enumerated().map { "Option \(numbers[$0.offset]): \($0.element.label)." }
+        let intro = state.questionProgress.index == 0 ? "\(prompt.sessionName) asks: " : ""
+        voice.announce(intro + question.text + " " + options.joined(separator: " "))
+    }
+
+    private func toggleOption(_ index: Int) {
+        guard let prompt = state.question else { return }
+        let current = state.questionProgress.index
+        if prompt.questions[current].multiSelect {
+            if state.questionProgress.picks[current].contains(index) {
+                state.questionProgress.picks[current].remove(index)
+            } else {
+                state.questionProgress.picks[current].insert(index)
+            }
+        } else {
+            state.questionProgress.picks[current] = [index]
+            state.questionProgress.other[current] = ""
+            nextQuestion()
+        }
+    }
+
+    private func previousQuestion() {
+        guard state.questionProgress.index > 0 else { return }
+        state.questionProgress.index -= 1
+    }
+
+    private func nextQuestion() {
+        guard let prompt = state.question else { return }
+        let progress = state.questionProgress
+        let answered = !progress.picks[progress.index].isEmpty || !progress.other[progress.index].trimmingCharacters(in: .whitespaces).isEmpty
+        guard answered else { return }
+        if progress.index < prompt.questions.count - 1 {
+            withAnimation(.easeInOut(duration: 0.2)) { state.questionProgress.index += 1 }
+            announceQuestion()
+        } else {
+            questions.answer(prompt.id, answers: QuestionPrompt.answers(for: prompt.questions, picks: progress.picks, other: progress.other))
+        }
+    }
+
+    private func handBackQuestion() {
+        guard let prompt = state.question else { return }
+        questions.handBack(prompt.id)
+    }
+
+    /// A spoken answer to the question on screen ("option two", "the first one", an option's name). True if used.
+    func handleSpokenAnswer(_ text: String) -> Bool {
+        guard let prompt = state.question else { return false }
+        let question = prompt.questions[state.questionProgress.index]
+        guard let action = QuestionVoice.parse(text, for: question) else { return false }
+        captureLog.info("spoken answer: \(String(describing: action), privacy: .public)")
+        switch action {
+        case .pick(let indexes):
+            if question.multiSelect {
+                state.questionProgress.picks[state.questionProgress.index] = Set(indexes)
+                nextQuestion()
+            } else if let first = indexes.first {
+                toggleOption(first)
+            }
+        case .other(let words):
+            state.questionProgress.other[state.questionProgress.index] = words
+            state.questionProgress.picks[state.questionProgress.index] = []
+            nextQuestion()
+        case .next:
+            nextQuestion()
+        case .handBack:
+            handBackQuestion()
+        }
+        return true
+    }
+
     // MARK: Capture field
 
     var captureText: String { state.captureText }
@@ -276,7 +405,7 @@ final class NotchController: CaptureSurface {
     func hideCapture() {
         withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.capture = nil }
         state.captureText = ""
-        panel.allowsKey = false
+        panel.allowsKey = state.question != nil
         panel.styleMask.insert(.nonactivatingPanel)
         panel.resignKey()
         panel.orderFrontRegardless()
@@ -287,7 +416,7 @@ final class NotchController: CaptureSurface {
     private func track() {
         let mouse = NSEvent.mouseLocation
         let now = Date()
-        if state.capture != nil, state.prompt == nil {
+        if state.prompt == nil, state.capture != nil || state.question != nil || state.notice != nil {
             setInteractive(true)
             return
         }

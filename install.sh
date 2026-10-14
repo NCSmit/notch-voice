@@ -21,9 +21,9 @@ if os.path.exists(path):
     with open(path) as f:
         settings = json.load(f)
     hooks = settings.get("hooks", {})
-    session_events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")
+    session_events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "PermissionDenied", "Stop", "SessionEnd")
     entries = [("Stop", "speak.py"), ("PermissionRequest", "notchvoice_permission.py"), ("UserPromptSubmit", "notchvoice_brief.py")]
-    entries += [(event, "notchvoice_sessions.py") for event in session_events]
+    entries += [(event, "notchvoice_sessions.py") for event in session_events] + [("PreToolUse", "notchvoice_question.py")]
     for event, script in entries:
         groups = []
         for group in hooks.get(event, []):
@@ -47,7 +47,7 @@ if os.path.exists(path):
         json.dump(settings, f, indent=2)
         f.write("\n")
 EOF
-  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
+  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOOKS/notchvoice_question.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
   rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/skills/orchestrator"
   rm -f "$HOME/.claude/notchvoice/orchestrator.json"
   python3 hook/notchvoice_desktop.py
@@ -61,7 +61,7 @@ if ! command -v swift >/dev/null 2>&1; then
 fi
 
 mkdir -p "$HOOKS"
-for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py notchvoice_sessions.py; do
+for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py notchvoice_sessions.py notchvoice_question.py; do
   if [[ -f "$HOOKS/$script" ]] && ! cmp -s "hook/$script" "$HOOKS/$script"; then
     cp "$HOOKS/$script" "$HOOKS/$script.bak"
     echo "Saved your previous $script as $HOOKS/$script.bak"
@@ -86,10 +86,12 @@ wanted = [
     ("Stop", {"type": "command", "command": "python3 ~/.claude/hooks/speak.py", "async": True, "timeout": 1500}),
     ("PermissionRequest", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_permission.py", "timeout": 600}),
     ("UserPromptSubmit", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_brief.py", "timeout": 10}),
-] + [(event, sessions_hook) for event in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")]
+] + [(event, sessions_hook) for event in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "PermissionDenied", "Stop", "SessionEnd")]
+# Questions (AskUserQuestion) are answered in the notch before Claude shows its own box; ten minutes to answer.
+wanted.append(("PreToolUse", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_question.py", "timeout": 660}))
 # SessionStart runs in the foreground so it can hand a compacted session back its saved working state.
 wanted.append(("SessionStart", {k: v for k, v in sessions_hook.items() if k != "async"}))
-tool_events = {"PreToolUse", "PostToolUse", "PermissionRequest"}
+tool_events = {"PreToolUse", "PostToolUse", "PermissionRequest", "PermissionDenied"}
 hooks = settings.setdefault("hooks", {})
 added = []
 for event, hook in wanted:
@@ -103,7 +105,8 @@ for event, hook in wanted:
             if event not in added:
                 added.append(event)
     if not existing:
-        groups.append({"matcher": "*", "hooks": [dict(hook)]} if event in tool_events else {"hooks": [dict(hook)]})
+        matcher = "AskUserQuestion" if script == "notchvoice_question.py" else "*"
+        groups.append({"matcher": matcher, "hooks": [dict(hook)]} if event in tool_events else {"hooks": [dict(hook)]})
         if event not in added:
             added.append(event)
 deny = settings.setdefault("permissions", {}).setdefault("deny", [])

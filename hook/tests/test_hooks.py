@@ -179,9 +179,26 @@ class TranscriptTests(unittest.TestCase):
 
 
 class PermissionHookTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for name, value in (("LOG_FILE", os.path.join(self.dir.name, "permissions.log")), ("CONNECT_GRACE", 0.3)):
+            patcher = mock.patch.object(permission, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_without_the_app_there_is_no_decision(self):
-        with tempfile.TemporaryDirectory() as folder, mock.patch.object(permission, "SOCKET", os.path.join(folder, "missing.sock")):
-            self.assertIsNone(permission.ask_notch({"tool_name": "Bash"}, permission.Transcript(None, "Bash", {})))
+        with mock.patch.object(permission, "SOCKET", os.path.join(self.dir.name, "missing.sock")):
+            decision, outcome = permission.ask_notch({"tool_name": "Bash"}, permission.Transcript(None, "Bash", {}))
+        self.assertIsNone(decision)
+        self.assertEqual(outcome, "notch app not reachable")
+
+    def test_every_request_is_logged_with_what_happened(self):
+        with mock.patch.object(permission, "ask_notch", return_value=(None, "answered in Claude")):
+            run_main(permission, {"tool_name": "Bash", "tool_input": {}, "session_id": "s1", "permission_mode": "auto"})
+        with open(permission.LOG_FILE) as f:
+            entry = json.loads(f.readline())
+        self.assertEqual((entry["session"], entry["mode"], entry["tool"], entry["outcome"]), ("s1", "auto", "Bash", "answered in Claude"))
 
     def test_returns_the_answer_given_in_the_notch(self):
         with tempfile.TemporaryDirectory(dir="/tmp") as folder:
@@ -199,20 +216,20 @@ class PermissionHookTests(unittest.TestCase):
             thread = threading.Thread(target=answer)
             thread.start()
             with mock.patch.object(permission, "SOCKET", path):
-                decision = permission.ask_notch({"tool_name": "Bash"}, permission.Transcript(None, "Bash", {}))
+                decision, _ = permission.ask_notch({"tool_name": "Bash"}, permission.Transcript(None, "Bash", {}))
             thread.join()
             server.close()
             self.assertEqual(decision, "allow")
 
     def test_prints_allow_and_deny_decisions_for_claude_code(self):
         for decision, behavior in (("allow", "allow"), ("deny", "deny")):
-            with mock.patch.object(permission, "ask_notch", return_value=decision):
+            with mock.patch.object(permission, "ask_notch", return_value=(decision, "notch")):
                 output = json.loads(run_main(permission, {"tool_name": "Bash", "tool_input": {"command": "ls"}}))
             self.assertEqual(output["hookSpecificOutput"]["hookEventName"], "PermissionRequest")
             self.assertEqual(output["hookSpecificOutput"]["decision"]["behavior"], behavior)
 
     def test_a_dismissed_request_leaves_the_decision_to_claude_code(self):
-        with mock.patch.object(permission, "ask_notch", return_value="ask"):
+        with mock.patch.object(permission, "ask_notch", return_value=(None, "notch: ask")):
             self.assertEqual(run_main(permission, {"tool_name": "Bash", "tool_input": {"command": "ls"}}), "")
 
     def test_questions_and_plan_approvals_never_reach_the_notch(self):

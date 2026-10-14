@@ -40,7 +40,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 926)
+    static let size = CGSize(width: 470, height: 1026)
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -74,6 +74,14 @@ struct SettingsView: View {
                     Text("Voice")
                 } footer: {
                     Text("Reminds Claude to answer in a few sentences while voice replies are on.")
+                }
+                Section {
+                    Toggle("Orchestrator mode", isOn: orchestratorMode)
+                    Toggle("Listen for \u{201C}Hey orchestrator\u{201D}", isOn: listensForWakeWord)
+                } header: {
+                    Text("Sessions")
+                } footer: {
+                    Text("Orchestrator mode: only the session where you ran /orchestrator speaks, and it briefs you on the others. Hey orchestrator: say it, dictate with Wispr Flow, and finish with \u{201C}send it\u{201D}. Your message is typed into the orchestrator session. The wake word is recognised on this Mac.")
                 }
                 Section {
                     LabeledContent("Music volume") {
@@ -229,6 +237,14 @@ struct SettingsView: View {
 
     private var keepsRepliesShort: Binding<Bool> {
         Binding(get: { voice.keepsRepliesShort }, set: { voice.setKeepsRepliesShort($0) })
+    }
+
+    private var listensForWakeWord: Binding<Bool> {
+        Binding(get: { preferences.listensForWakeWord }, set: { preferences.setListensForWakeWord($0) })
+    }
+
+    private var orchestratorMode: Binding<Bool> {
+        Binding(get: { voice.isOrchestratorMode }, set: { voice.setOrchestratorMode($0) })
     }
 
     private var musicVolume: Binding<Double> {

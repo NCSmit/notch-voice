@@ -12,7 +12,9 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$BIN_DIR/NotchVoice" "$APP/Contents/MacOS/NotchVoice"
 cp Info.plist "$APP/Contents/Info.plist"
 xattr -cr "$APP"
-codesign --force --sign - "$APP"
+# Ad-hoc signatures normally pin macOS privacy permissions (microphone, speech, accessibility) to this exact build,
+# so every rebuild would lose them. A designated requirement on the bundle identifier keeps them across rebuilds.
+codesign --force --sign - --requirements '=designated => identifier "local.notchvoice"' "$APP"
 
 if [[ "${1:-}" == "--install" ]]; then
   pkill -x NotchVoice || true

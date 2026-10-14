@@ -7,7 +7,10 @@ struct WakeWordTests {
         #expect(WakeWordListener.containsWakeWord("so yeah. Hey, Orchestrator!"))
         #expect(WakeWordListener.containsWakeWord("hey orchestra"))
         #expect(WakeWordListener.containsWakeWord("OK orchestrator"))
+        #expect(WakeWordListener.containsWakeWord("Orchestra"))
+        #expect(WakeWordListener.containsWakeWord("Orchestrator."))
         #expect(!WakeWordListener.containsWakeWord("the orchestrator said the build passed"))
+        #expect(!WakeWordListener.containsWakeWord("Microphone Orchestra literally that's how I sent this"))
         #expect(!WakeWordListener.containsWakeWord("hey there"))
     }
 
@@ -15,6 +18,12 @@ struct WakeWordTests {
         #expect(WakeWordListener.endsWithStopWord("ship the fix, send it"))
         #expect(WakeWordListener.endsWithStopWord("Send it."))
         #expect(!WakeWordListener.endsWithStopWord("send it to the team and then wait"))
+    }
+
+    @Test func cancelThatAtTheEndAbortsButNotMidSentence() {
+        #expect(WakeWordListener.endsWithAbortWord("no wait, cancel that"))
+        #expect(WakeWordListener.endsWithAbortWord("Cancel that."))
+        #expect(!WakeWordListener.endsWithAbortWord("cancel that meeting and send it"))
     }
 
     @Test func stripsTheStopPhraseButKeepsTheMessage() {

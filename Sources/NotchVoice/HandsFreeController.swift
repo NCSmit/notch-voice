@@ -6,6 +6,18 @@ private let log = Logger(subsystem: "local.notchvoice", category: "handsfree")
 
 /// "Hey orchestrator" → Wispr Flow dictates into a box under the notch → "send it" (or a pause) → the text is typed
 /// into the orchestrator session as the user's own message.
+/// Where the dictated message is shown and typed: the capture field in the notch.
+@MainActor
+protocol CaptureSurface: AnyObject {
+    var captureText: String { get }
+    func showCapture(status: String, text: String?)
+    func setCaptureStatus(_ status: String)
+    func setCaptureTranscript(_ transcript: String)
+    func hideCapture()
+}
+
+/// "Hey orchestrator" → Wispr Flow dictates into a field in the notch → "send it" (or a pause) → the text is typed
+/// into the orchestrator session as the user's own message.
 @MainActor
 final class HandsFreeController: ObservableObject {
     enum Phase: Equatable {
@@ -14,30 +26,33 @@ final class HandsFreeController: ObservableObject {
     }
 
     @Published private(set) var phase = Phase.off
+    weak var surface: CaptureSurface?
 
     private let listener = WakeWordListener()
     private let dictation: DictationMonitor
-    private let window = CaptureWindow()
     private var previousApp: NSRunningApplication?
     private var enabledChanges: AnyCancellable?
     private var retryTimer: Timer?
     private var isEnabled = false
+    private var pasteboardCount = 0
 
     private static let startWispr = URL(string: "wispr-flow://start-hands-free")!
     private static let stopWispr = URL(string: "wispr-flow://stop-hands-free")!
-    private static let wisprTextWait: TimeInterval = 8
+    /// How long to wait for Wispr's transcript before using Apple's on-device one.
+    private static let wisprTextWait: TimeInterval = 4
 
     init(dictation: DictationMonitor, preferences: Preferences) {
         self.dictation = dictation
         listener.onWake = { [weak self] in self?.wake() }
         listener.onStop = { [weak self] reason, heard in self?.captureEnded(reason, heard: heard) }
         listener.onUnavailable = { [weak self] reason in self?.listenerStopped(reason) }
-        window.onCancel = { [weak self] in self?.cancel() }
-        window.onSend = { [weak self] in self?.sendNow() }
+        listener.onTranscript = { [weak self] text in self?.surface?.setCaptureTranscript(text) }
         enabledChanges = preferences.$listensForWakeWord.sink { [weak self] on in
             MainActor.assumeIsolated { self?.setEnabled(on) }
         }
     }
+
+    // MARK: Arming
 
     private func setEnabled(_ on: Bool) {
         isEnabled = on
@@ -52,8 +67,8 @@ final class HandsFreeController: ObservableObject {
         }
     }
 
-    /// Start listening, or say why not and try again shortly: a permission granted in System Settings, or a speech
-    /// model that finishes downloading, is picked up without restarting NotchVoice.
+    /// Start listening, or say why not and try again shortly: a permission granted in System Settings, or Dictation
+    /// switched on, is picked up without restarting NotchVoice.
     private func arm() {
         log.info("arming hands-free (enabled: \(self.isEnabled, privacy: .public), running: \(self.listener.isRunning, privacy: .public))")
         guard isEnabled, !listener.isRunning else { return }
@@ -72,12 +87,7 @@ final class HandsFreeController: ObservableObject {
             if let reason {
                 log.error("hands-free not armed: \(reason, privacy: .public)")
                 phase = .failed(reason)
-                retryTimer?.invalidate()
-                let timer = Timer(timeInterval: 10, repeats: false) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.arm() }
-                }
-                RunLoop.main.add(timer, forMode: .common)
-                retryTimer = timer
+                scheduleRetry(after: 10)
             } else {
                 log.info("hands-free armed")
                 phase = .listening
@@ -85,101 +95,138 @@ final class HandsFreeController: ObservableObject {
         }
     }
 
-    private func listenerStopped(_ reason: String) {
-        log.error("hands-free stopped: \(reason, privacy: .public)")
-        if phase == .capturing { cancel() }
-        phase = .failed(reason)
+    private func scheduleRetry(after seconds: TimeInterval) {
         retryTimer?.invalidate()
-        // Slow retry: a setting changed in System Settings is picked up without restarting NotchVoice.
-        let timer = Timer(timeInterval: 30, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: seconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.arm() }
         }
         RunLoop.main.add(timer, forMode: .common)
         retryTimer = timer
     }
 
+    private func listenerStopped(_ reason: String) {
+        log.error("hands-free stopped: \(reason, privacy: .public)")
+        if phase == .capturing { cancel(reason: "listener stopped") }
+        phase = .failed(reason)
+        scheduleRetry(after: 30)
+    }
+
+    // MARK: Capturing
+
     private func wake() {
-        guard phase == .listening || phaseIsFailure else { return }
+        guard phase == .listening || canRetryFromFailure else { return }
         previousApp = NSWorkspace.shared.frontmostApplication
         dictation.hold(true)  // pauses or holds back any reply until the message is sent
         phase = .capturing
-        window.show(status: "Listening… say \u{201C}send it\u{201D} when you're done. Esc cancels.")
+        Sound.play(.start)
+        surface?.showCapture(status: "Listening \u{2014} \u{201C}send it\u{201D} sends, \u{201C}cancel that\u{201D} throws it away", text: nil)
         listener.beginCapture()
         openQuietly(Self.startWispr)
+        log.info("capturing; front app was \(self.previousApp?.localizedName ?? "none", privacy: .public)")
+    }
+
+    private var canRetryFromFailure: Bool {
+        if case .failed = phase { return listener.isRunning }
+        return false
     }
 
     private func captureEnded(_ reason: WakeWordListener.StopReason, heard: String) {
         guard phase == .capturing else { return }
         if listener.mode == .capture { listener.endCapture() }
+        pasteboardCount = NSPasteboard.general.changeCount
         openQuietly(Self.stopWispr)
         if reason == .nothingSaid {
-            cancel()
+            cancel(reason: "nothing said")
+            return
+        }
+        if reason == .aborted {
+            Sound.play(.cancelled)
+            cancel(reason: "user said cancel that")
             return
         }
         phase = .sending
-        window.setStatus("Sending…")
+        surface?.setCaptureStatus("Sending\u{2026}")
         Task { await finish(fallback: heard) }
     }
 
-    /// Cmd-Return in the box: end dictation now, or retry a message that failed to send.
-    private func sendNow() {
+    /// The field's Enter: end dictation now, or retry a message that failed to send.
+    func sendNow() {
         if phase == .capturing {
             captureEnded(.stopWord, heard: "")
-        } else if phaseIsFailure {
+        } else if case .failed = phase, surface?.captureText.isEmpty == false {
             dictation.hold(true)
             phase = .sending
-            window.setStatus("Sending…")
+            surface?.setCaptureStatus("Sending\u{2026}")
             Task { await finish(fallback: "") }
         }
     }
 
+    /// The field's Escape.
+    func cancelFromField() {
+        cancel(reason: "cancelled")
+    }
+
     private func finish(fallback: String) async {
-        // Wispr pastes its transcript into the box a moment after it stops; wait until the text settles.
-        var text = "", stableSince = Date()
-        let deadline = Date().addingTimeInterval(Self.wisprTextWait)
-        while Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(200))
-            let current = window.text
-            if current != text {
-                text = current
-                stableSince = Date()
-            } else if !text.isEmpty, Date().timeIntervalSince(stableSince) > 1 {
-                break
-            }
-        }
-        // Wispr is the better transcriber; Apple's on-device transcript is the backup.
-        let message = WakeWordListener.strippingStopPhrase(text.isEmpty ? fallback : text)
+        let (raw, source) = await transcript(fallback: fallback)
+        let message = WakeWordListener.strippingStopPhrase(raw)
+        log.info("message from \(source, privacy: .public): \(message.count, privacy: .public) characters")
         guard !message.isEmpty else {
-            cancel()
+            Sound.play(.failed)
+            cancel(reason: "empty message")
             return
         }
-        window.hide()
         do {
             try await OrchestratorDelivery.deliver(message, returnTo: previousApp)
+            Sound.play(.sent)
+            surface?.hideCapture()
             dictation.hold(false)
+            previousApp = nil
             phase = .listening
         } catch {
-            log.error("delivery failed: \(String(describing: error))")
+            log.error("delivery failed: \(String(describing: error), privacy: .public)")
+            Sound.play(.failed)
             dictation.hold(false)
             phase = .failed(String(describing: error))
-            // Keep the words: show them again so nothing is lost.
-            window.show(status: "\(error) Cmd-Return retries, Esc closes.", text: message, activate: false)
+            // Keep the words in the field so nothing is lost: Enter retries, Esc closes.
+            surface?.showCapture(status: "\(error) Enter retries, Esc closes.", text: message)
         }
     }
 
-    private func cancel() {
+    /// Wispr's transcript lands in the notch field, or on the clipboard when the field didn't have focus. Take
+    /// whichever arrives first; if neither does in time, use Apple's on-device transcript.
+    private func transcript(fallback: String) async -> (String, String) {
+        let deadline = Date().addingTimeInterval(Self.wisprTextWait)
+        var last = "", stableSince = Date()
+        while Date() < deadline {
+            let field = surface?.captureText ?? ""
+            if !field.isEmpty {
+                // Wispr inserts the whole transcript at once; ending in the stop phrase means it's complete.
+                if WakeWordListener.endsWithStopWord(field) { return (field, "Wispr (field)") }
+                if field != last {
+                    last = field
+                    stableSince = Date()
+                } else if Date().timeIntervalSince(stableSince) > 0.3 {
+                    return (field, "Wispr (field)")
+                }
+            }
+            let pasteboard = NSPasteboard.general
+            if pasteboard.changeCount != pasteboardCount, let copied = pasteboard.string(forType: .string), !copied.isEmpty {
+                return (copied, "Wispr (clipboard)")
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return (fallback, "Apple on-device")
+    }
+
+    private func cancel(reason: String = "stopped") {
+        log.info("capture cancelled: \(reason, privacy: .public)")
         if listener.mode == .capture { listener.endCapture() }
         if phase == .capturing { openQuietly(Self.stopWispr) }
-        window.hide()
+        surface?.hideCapture()
         dictation.hold(false)
         previousApp?.activate()
         previousApp = nil
-        phase = listener.isRunning ? .listening : .off
-    }
-
-    private var phaseIsFailure: Bool {
-        if case .failed = phase { return true }
-        return false
+        if phase != .off { phase = listener.isRunning ? .listening : phase }
     }
 
     private func openQuietly(_ url: URL) {
@@ -189,99 +236,19 @@ final class HandsFreeController: ObservableObject {
     }
 }
 
-/// A small text box under the notch for Wispr Flow to type into. It takes focus while dictating, then gives it back.
-@MainActor
-final class CaptureWindow: NSObject, NSWindowDelegate {
-    var onCancel: () -> Void = {}
-    var onSend: () -> Void = {}
+/// Short system sounds, so the user knows what happened without looking.
+enum Sound {
+    case start, sent, failed, cancelled
 
-    private let panel: KeyablePanel
-    private let scroll = NSTextView.scrollableTextView()
-    private var textView: NSTextView { scroll.documentView as! NSTextView }
-    private let status = NSTextField(labelWithString: "")
-
-    var text: String { textView.string }
-
-    override init() {
-        panel = KeyablePanel(contentRect: CGRect(x: 0, y: 0, width: 520, height: 150),
-                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        super.init()
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isReleasedWhenClosed = false
-        panel.onEscape = { [weak self] in self?.onCancel() }
-        panel.onCommandReturn = { [weak self] in self?.onSend() }
-
-        let background = NSVisualEffectView()
-        background.material = .hudWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 18
-        background.layer?.masksToBounds = true
-        panel.contentView = background
-
-        status.font = .systemFont(ofSize: 11, weight: .semibold)
-        status.textColor = .secondaryLabelColor
-        status.translatesAutoresizingMaskIntoConstraints = false
-
-        scroll.drawsBackground = false
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        textView.font = .systemFont(ofSize: 14)
-        textView.drawsBackground = false
-        textView.isRichText = false
-        textView.allowsUndo = true
-
-        background.addSubview(status)
-        background.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            status.topAnchor.constraint(equalTo: background.topAnchor, constant: 12),
-            status.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            status.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            scroll.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 6),
-            scroll.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 12),
-            scroll.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -12),
-            scroll.bottomAnchor.constraint(equalTo: background.bottomAnchor, constant: -12),
-        ])
-    }
-
-    func show(status message: String, text: String = "", activate: Bool = true) {
-        textView.string = text
-        status.stringValue = message
-        if let screen = NotchMetrics.target() {
-            let frame = screen.screen.frame
-            let top = frame.maxY - screen.metrics.notch.height - 10
-            panel.setFrameTopLeftPoint(CGPoint(x: frame.midX - panel.frame.width / 2, y: top))
+    @MainActor
+    static func play(_ sound: Sound) {
+        let name: String
+        switch sound {
+        case .start: name = "Tink"
+        case .sent: name = "Glass"
+        case .failed: name = "Basso"
+        case .cancelled: name = "Funk"
         }
-        if activate { NSApp.activate() }
-        panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(textView)
-    }
-
-    func setStatus(_ message: String) {
-        status.stringValue = message
-    }
-
-    func hide() {
-        panel.orderOut(nil)
-    }
-}
-
-final class KeyablePanel: NSPanel {
-    var onEscape: () -> Void = {}
-    var onCommandReturn: () -> Void = {}
-
-    override var canBecomeKey: Bool { true }
-
-    override func cancelOperation(_ sender: Any?) { onEscape() }
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.keyCode == 36, event.modifierFlags.contains(.command) {
-            onCommandReturn()
-            return true
-        }
-        return super.performKeyEquivalent(with: event)
+        NSSound(named: NSSound.Name(name))?.play()
     }
 }

@@ -81,14 +81,15 @@ enum OrchestratorDelivery {
 
         NSWorkspace.shared.open(link)
         // Wait for the app to come forward with the session's message box focused.
-        for _ in 0..<20 where NSWorkspace.shared.frontmostApplication?.bundleIdentifier != claudeBundleID {
-            try await Task.sleep(for: .milliseconds(100))
+        for _ in 0..<40 where NSWorkspace.shared.frontmostApplication?.bundleIdentifier != claudeBundleID {
+            try await Task.sleep(for: .milliseconds(50))
         }
-        try await Task.sleep(for: .milliseconds(450))
+        // The session view needs a moment to focus its message box after coming forward.
+        try await Task.sleep(for: .milliseconds(250))
         press(key: 9, flags: .maskCommand)  // V
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(120))
         press(key: 36, flags: [])  // Return
-        try await Task.sleep(for: .milliseconds(400))
+        try await Task.sleep(for: .milliseconds(200))
 
         pasteboard.clearContents()
         if let saved { pasteboard.setString(saved, forType: .string) }

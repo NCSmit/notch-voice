@@ -1,6 +1,10 @@
 import AppKit
+import ApplicationServices
 import Combine
 import SwiftUI
+import os
+
+private let captureLog = Logger(subsystem: "local.notchvoice", category: "handsfree")
 
 struct NotchMetrics: Equatable {
     var notch: CGSize
@@ -20,18 +24,22 @@ struct NotchMetrics: Equatable {
     static let sessionRowHeight: CGFloat = 38
     static let sessionListPadding: CGFloat = 12
     static let tabBarHeight: CGFloat = 26
+    static let captureHeight: CGFloat = 86
 
-    func openSize(rows: Int, hasTabs: Bool = false) -> CGSize {
+    /// The notch popped out with only the capture field, while hands-free waits for a dictated message.
+    var captureSize: CGSize { CGSize(width: max(460, notch.width + 270), height: notch.height + Self.captureHeight) }
+
+    func openSize(rows: Int, hasTabs: Bool = false, capture: Bool = false) -> CGSize {
         let list = rows > 0 ? CGFloat(rows) * Self.sessionRowHeight + Self.sessionListPadding : 0
         let wide = rows > 0 || hasTabs
         return CGSize(
             width: max(wide ? 440 : 360, notch.width + (wide ? 250 : 170)),
-            height: notch.height + Self.voiceRowHeight + (hasTabs ? Self.tabBarHeight : 0) + list
+            height: notch.height + Self.voiceRowHeight + (hasTabs ? Self.tabBarHeight : 0) + list + (capture ? Self.captureHeight : 0)
         )
     }
     var permissionSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 152) }
     var windowSize: CGSize {
-        let tallest = openSize(rows: max(ClaudeSession.maxShown, TrackedPR.maxShown), hasTabs: true)
+        let tallest = openSize(rows: max(ClaudeSession.maxShown, TrackedPR.maxShown), hasTabs: true, capture: true)
         return CGSize(
             width: max(permissionSize.width, tallest.width) + 2 * Self.glowMargin,
             height: max(permissionSize.height, tallest.height) + Self.glowMargin
@@ -62,18 +70,27 @@ final class NotchState: ObservableObject {
     @Published var orchestratorID: String?
     @Published var prs: [TrackedPR] = []
     @Published var handsFree = HandsFreeController.Phase.off
+    /// Shown while hands-free takes a message: a status line, Wispr's text field, and Apple's live transcript.
+    @Published var capture: CaptureState?
+    @Published var captureText = ""
+    @Published var captureFocus = 0
     @Published var tab: NotchTab = .sessions
 
     var hasTabs: Bool { !prs.isEmpty }
     var shownTab: NotchTab { hasTabs ? tab : .sessions }
     var openSize: CGSize {
-        metrics.openSize(rows: shownTab == .sessions ? sessions.count : prs.count, hasTabs: hasTabs)
+        metrics.openSize(rows: shownTab == .sessions ? sessions.count : prs.count, hasTabs: hasTabs, capture: capture != nil)
     }
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
+struct CaptureState: Equatable {
+    var status: String
+    var transcript = ""
+}
+
 @MainActor
-final class NotchController {
+final class NotchController: CaptureSurface {
     private let voice: VoiceController
     private let state = NotchState()
     private let panel = NotchPanel()
@@ -90,6 +107,7 @@ final class NotchController {
     private var orchestratorChanges: AnyCancellable?
     private var prChanges: AnyCancellable?
     private var handsFreeChanges: AnyCancellable?
+    private weak var handsFree: HandsFreeController?
     private var glowPreview = 0
     private let preferences: Preferences
     private var reopenAfterPrompt = false
@@ -98,7 +116,11 @@ final class NotchController {
     init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, handsFree: HandsFreeController, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
         self.preferences = preferences
-        let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings)
+        let root = NotchRootView(
+            state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings,
+            sendCapture: { [weak handsFree] in handsFree?.sendNow() },
+            cancelCapture: { [weak handsFree] in handsFree?.cancelFromField() }
+        )
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
         panel.contentView = host
@@ -117,6 +139,7 @@ final class NotchController {
         permissionChanges = permissions.$queue.sink { [weak self] queue in
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
         }
+        self.handsFree = handsFree
         handsFreeChanges = handsFree.$phase.sink { [weak self] phase in
             MainActor.assumeIsolated {
                 withAnimation(.easeInOut(duration: 0.25)) { self?.state.handsFree = phase }
@@ -199,9 +222,70 @@ final class NotchController {
         leaveStart = nil
     }
 
+    // MARK: Capture field
+
+    var captureText: String { state.captureText }
+
+    func showCapture(status: String, text: String?) {
+        if let text { state.captureText = text } else if state.capture == nil { state.captureText = "" }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            state.capture = CaptureState(status: status)
+        }
+        // Wispr Flow types into the focused field of the frontmost app, so NotchVoice has to be frontmost with the
+        // field focused. An accessory app's own activate() is often refused; opening itself through Launch Services
+        // isn't.
+        panel.allowsKey = true
+        // A non-activating panel can be key while another app stays frontmost, and Wispr types into the frontmost
+        // app; so the panel activates NotchVoice while it captures.
+        panel.styleMask.remove(.nonactivatingPanel)
+        setInteractive(true)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration)
+        NSApp.activate()
+        // With Accessibility access (needed for sending anyway), macOS honours this even when activate() is refused.
+        AXUIElementSetAttributeValue(AXUIElementCreateApplication(getpid()), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        panel.makeKeyAndOrderFront(nil)
+        state.captureFocus += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                captureLog.info("capture focus: front app \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "none", privacy: .public), active \(NSApp.isActive, privacy: .public), key \(self.panel.isKeyWindow, privacy: .public), first responder \(String(describing: type(of: self.panel.firstResponder)), privacy: .public)")
+                if !self.panel.isKeyWindow || !NSApp.isActive {
+                    AXUIElementSetAttributeValue(AXUIElementCreateApplication(getpid()), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+                    self.panel.makeKeyAndOrderFront(nil)
+                    self.state.captureFocus += 1
+                }
+            }
+        }
+    }
+
+    func setCaptureStatus(_ status: String) {
+        state.capture?.status = status
+    }
+
+    func setCaptureTranscript(_ transcript: String) {
+        state.capture?.transcript = transcript
+    }
+
+    func hideCapture() {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.capture = nil }
+        state.captureText = ""
+        panel.allowsKey = false
+        panel.styleMask.insert(.nonactivatingPanel)
+        panel.resignKey()
+        panel.orderFrontRegardless()
+        setInteractive(false)
+        startTracking()
+    }
+
     private func track() {
         let mouse = NSEvent.mouseLocation
         let now = Date()
+        if state.capture != nil, state.prompt == nil {
+            setInteractive(true)
+            return
+        }
         if state.prompt != nil {
             setInteractive(permissionZone.contains(mouse) || isMenuOpen)
             return
@@ -288,6 +372,9 @@ final class NotchController {
 }
 
 final class NotchPanel: NSPanel {
+    /// Only while hands-free shows its capture field, so Wispr Flow can type into it.
+    var allowsKey = false
+
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
@@ -301,7 +388,7 @@ final class NotchPanel: NSPanel {
         animationBehavior = .none
     }
 
-    override var canBecomeKey: Bool { false }
+    override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }

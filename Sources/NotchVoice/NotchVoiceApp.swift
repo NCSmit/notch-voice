@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
         notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker, handsFree: handsFree) { settings.show() }
+        handsFree.surface = notch
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
     }

@@ -11,14 +11,21 @@ struct NotchRootView: View {
     @ObservedObject var preferences: Preferences
     let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
+    let sendCapture: @MainActor () -> Void
+    let cancelCapture: @MainActor () -> Void
 
     var body: some View {
         NotchView(
+            capture: state.capture,
+            captureText: $state.captureText,
+            captureFocus: state.captureFocus,
+            sendCapture: sendCapture,
+            cancelCapture: cancelCapture,
             metrics: state.metrics,
             isOpen: state.isOpen,
             isEnabled: voice.isEnabled,
             isSpeaking: voice.isSpeaking,
-            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil,
+            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil || state.capture != nil,
             theme: preferences.theme,
             prompt: state.prompt,
             pendingCount: state.pendingCount,
@@ -41,6 +48,11 @@ struct NotchRootView: View {
 }
 
 struct NotchView: View {
+    let capture: CaptureState?
+    @Binding var captureText: String
+    let captureFocus: Int
+    let sendCapture: @MainActor () -> Void
+    let cancelCapture: @MainActor () -> Void
     let metrics: NotchMetrics
     let isOpen: Bool
     let isEnabled: Bool
@@ -65,11 +77,12 @@ struct NotchView: View {
     let openSettings: @MainActor () -> Void
 
     var body: some View {
-        let isExpanded = isOpen || prompt != nil
+        let isExpanded = isOpen || prompt != nil || capture != nil
         let rows = tab == .sessions ? sessions.count : prs.count
         let showsIndicator = handsFree != .off
         let size = prompt != nil ? metrics.permissionSize
-            : isOpen ? metrics.openSize(rows: rows, hasTabs: !prs.isEmpty)
+            : isOpen ? metrics.openSize(rows: rows, hasTabs: !prs.isEmpty, capture: capture != nil)
+            : capture != nil ? metrics.captureSize
             : showsIndicator ? metrics.closedSizeWithIndicator : metrics.closedSize
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
@@ -126,9 +139,20 @@ struct NotchView: View {
                     } else if !sessions.isEmpty {
                         SessionList(sessions: sessions, speakingSession: speakingSession, orchestratorID: orchestratorID, prs: prs, accent: theme.accent)
                     }
+                    if let capture {
+                        captureField(capture)
+                    }
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
                 .padding(.top, metrics.notch.height)
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
+                    removal: .opacity.animation(.easeIn(duration: 0.1))
+                ))
+            } else if let capture {
+                captureField(capture)
+                    .padding(.top, metrics.notch.height)
+                    .frame(maxHeight: .infinity, alignment: .top)
                 .transition(.asymmetric(
                     insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                     removal: .opacity.animation(.easeIn(duration: 0.1))
@@ -137,6 +161,73 @@ struct NotchView: View {
         }
         .frame(width: size.width, height: size.height)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+extension NotchView {
+    func captureField(_ capture: CaptureState) -> some View {
+        CaptureField(
+            capture: capture, text: $captureText, focusToken: captureFocus, accent: theme.accent,
+            send: sendCapture, cancel: cancelCapture
+        )
+        .frame(height: NotchMetrics.captureHeight)
+    }
+}
+
+/// The field Wispr Flow types the dictated message into, in the notch's own black style.
+struct CaptureField: View {
+    let capture: CaptureState
+    @Binding var text: String
+    let focusToken: Int
+    let accent: LinearGradient
+    let send: @MainActor () -> Void
+    let cancel: @MainActor () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.red)
+                    .symbolEffect(.pulse, isActive: true)
+                Text(capture.status)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    // Apple's live transcript as a hint until Wispr's polished text arrives.
+                    Text(capture.transcript.isEmpty ? "Speak now\u{2026}" : String(capture.transcript.suffix(160)))
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .lineLimit(2, reservesSpace: false)
+                        .truncationMode(.head)
+                        .allowsHitTesting(false)
+                }
+                TextField("", text: $text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                    .lineLimit(1...2)
+                    .focused($focused)
+                    .onSubmit { send() }
+                    .onExitCommand { cancel() }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(accent, lineWidth: 1.2).opacity(0.9))
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .onAppear { focused = true }
+        .onChange(of: focusToken) { focused = true }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Message to the orchestrator")
     }
 }
 

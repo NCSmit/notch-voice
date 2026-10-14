@@ -18,13 +18,15 @@ final class WakeWordListener {
     }
 
     enum StopReason {
-        case stopWord, silence, nothingSaid, timeLimit
+        case stopWord, silence, nothingSaid, timeLimit, aborted
     }
 
     var onWake: () -> Void = {}
     var onStop: (StopReason, String) -> Void = { _, _ in }
     /// Listening stopped by itself (for example Dictation is off); the controller shows why and retries later.
     var onUnavailable: (String) -> Void = { _ in }
+    /// The live transcript of the message being dictated, for the notch to show.
+    var onTranscript: (String) -> Void = { _ in }
 
     private(set) var isRunning = false
     private(set) var mode = Mode.wake
@@ -49,6 +51,9 @@ final class WakeWordListener {
     private var captureStart = Date()
     private var lastWordAt: Date?
     private var heard = ""
+    // Apple's recognizer ends a segment at every pause; finished segments of the message are kept here.
+    private var committed = ""
+    private var transcript: String { [committed, heard].filter { !$0.isEmpty }.joined(separator: " ") }
 
     static let silenceToStop: TimeInterval = 2
     static let nothingSaidTimeout: TimeInterval = 8
@@ -190,6 +195,7 @@ final class WakeWordListener {
         captureStart = Date()
         lastWordAt = nil
         heard = ""
+        committed = ""
         startRequest()
         silenceTimer?.invalidate()
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -211,7 +217,7 @@ final class WakeWordListener {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
-        request.contextualStrings = ["Hey orchestrator", "orchestrator", "send it"]
+        request.contextualStrings = ["Hey orchestrator", "orchestrator", "send it", "cancel that"]
         feed.set(request)
         task = recognizer?.recognitionTask(with: request) { [weak self] result, error in
             let nsError = error.map { $0 as NSError }
@@ -219,9 +225,15 @@ final class WakeWordListener {
             let failed = error != nil || result?.isFinal == true
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, self.isRunning else { return }
+                    // A cancelled request can still deliver a late result; it belongs to the previous phase (a
+                    // trailing "hey orchestrator" once capture began), so drop it.
+                    guard let self, self.isRunning, self.feed.isCurrent(request) else { return }
                     if let text { self.heard(text) }
-                    guard failed, self.feed.isCurrent(request) else { return }
+                    guard failed else { return }
+                    if self.mode == .capture, !self.heard.isEmpty {
+                        self.committed = self.transcript
+                        self.heard = ""
+                    }
                     if let nsError, self.giveUp(on: nsError) { return }
                     self.startRequest()
                 }
@@ -269,8 +281,13 @@ final class WakeWordListener {
             if text != heard {
                 heard = text
                 lastWordAt = Date()
+                onTranscript(transcript)
             }
-            if Self.endsWithStopWord(text) { finishCapture(.stopWord) }
+            if Self.endsWithAbortWord(text) {
+                finishCapture(.aborted)
+            } else if Self.endsWithStopWord(text) {
+                finishCapture(.stopWord)
+            }
         }
     }
 
@@ -279,7 +296,8 @@ final class WakeWordListener {
         let now = Date()
         if now.timeIntervalSince(captureStart) > Self.captureLimit {
             finishCapture(.timeLimit)
-        } else if let last = lastWordAt {
+        } else if let last = lastWordAt, !transcript.isEmpty {
+            // Only a pause after real words ends the message, never the pause before the user starts talking.
             if now.timeIntervalSince(last) >= Self.silenceToStop { finishCapture(.silence) }
         } else if now.timeIntervalSince(captureStart) > Self.nothingSaidTimeout {
             finishCapture(.nothingSaid)
@@ -288,7 +306,7 @@ final class WakeWordListener {
 
     private func finishCapture(_ reason: StopReason) {
         guard mode == .capture else { return }
-        let text = heard
+        let text = transcript
         endCapture()
         log.info("capture ended")
         onStop(reason, text)
@@ -312,7 +330,16 @@ final class WakeWordListener {
     }
 
     nonisolated static func containsWakeWord(_ text: String) -> Bool {
-        normalized(text).range(of: "\\b(hey|hi|hay|a|okay|ok) orchestra(tor|ter|te)?s?\\b", options: .regularExpression) != nil
+        let words = normalized(text)
+        // "Hey orchestrator" anywhere, or, because Apple's recognizer often drops the "hey" at the start of a phrase,
+        // the word on its own as a whole phrase ("Orchestra"). A mention mid-sentence doesn't count.
+        return words.range(of: "\\b(hey|hi|hay|a|okay|ok) orchestra(tor|ter|te)?s?\\b", options: .regularExpression) != nil
+            || words.range(of: "^((hey|hi|hay|a|okay|ok) )?orchestra(tor|ter|te)?s?$", options: .regularExpression) != nil
+    }
+
+    /// "Cancel that" at the end throws the message away. ("Scratch that" is Wispr Flow's own undo command.)
+    nonisolated static func endsWithAbortWord(_ text: String) -> Bool {
+        normalized(text).range(of: "\\bcancel that$", options: .regularExpression) != nil
     }
 
     nonisolated static func endsWithStopWord(_ text: String) -> Bool {

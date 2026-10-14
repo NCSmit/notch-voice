@@ -104,7 +104,11 @@ final class WakeWordListener {
         return nil
     }
 
-    func start() {
+    /// The microphone in use, so the controller can tell when it should switch.
+    private(set) var device: AVCaptureDevice?
+
+    /// Start listening on `device`, or by default on the built-in (or another wired) mic.
+    func start(on chosen: AVCaptureDevice? = nil) {
         guard !isRunning else { return }
         unavailableNote = nil
         if let reason = unavailableReason() {
@@ -113,7 +117,7 @@ final class WakeWordListener {
         }
         // Listen on a wired or built-in mic. Holding a Bluetooth headset's mic open (AirPods) forces it into call mode,
         // which turns all its audio, spoken replies and music included, into crackly low-quality sound.
-        guard let device = Self.nonBluetoothMicrophone() else {
+        guard let device = chosen ?? Self.nonBluetoothMicrophone() else {
             log.error("not listening: only Bluetooth microphones are available")
             unavailableNote = "Only a Bluetooth microphone is available, and listening on it would make your headphones sound like a phone call. Open the MacBook lid or connect a wired mic."
             return
@@ -155,6 +159,7 @@ final class WakeWordListener {
             }
         }
         captureSession = session
+        self.device = device
         session.startRunning()
         log.info("listening on \(device.localizedName, privacy: .public)")
         isRunning = true
@@ -184,6 +189,7 @@ final class WakeWordListener {
         feed.set(nil)
         captureSession?.stopRunning()
         captureSession = nil
+        device = nil
         if let runtimeObserver { NotificationCenter.default.removeObserver(runtimeObserver) }
         runtimeObserver = nil
         mode = .wake
@@ -310,6 +316,18 @@ final class WakeWordListener {
         endCapture()
         log.info("capture ended")
         onStop(reason, text)
+    }
+
+    /// The Bluetooth headset mic (AirPods), preferring the one that is the system's default input.
+    nonisolated static func headphoneMicrophone() -> AVCaptureDevice? {
+        let bluetooth = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified).devices
+            .filter { [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE].contains(UInt32(bitPattern: $0.transportType)) }
+        let preferred = AVCaptureDevice.default(for: .audio)?.uniqueID
+        return bluetooth.first { $0.uniqueID == preferred } ?? bluetooth.first
+    }
+
+    nonisolated static func isBluetooth(_ device: AVCaptureDevice) -> Bool {
+        [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE].contains(UInt32(bitPattern: device.transportType))
     }
 
     /// The built-in mic, or else another wired (non-Bluetooth, non-virtual) one.

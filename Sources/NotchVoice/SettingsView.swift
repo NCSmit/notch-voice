@@ -40,7 +40,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1026)
+    static let size = CGSize(width: 470, height: 1110)
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -78,6 +78,12 @@ struct SettingsView: View {
                 Section {
                     Toggle("Orchestrator mode", isOn: orchestratorMode)
                     Toggle("Listen for \u{201C}Hey orchestrator\u{201D}", isOn: listensForWakeWord)
+                    Toggle("Listen through AirPods when I'm away", isOn: listensThroughHeadphones)
+                        .disabled(!preferences.listensForWakeWord)
+                        .help("After two minutes without keyboard or mouse use, the wake word is heard through your AirPods' mic, which puts them in call-quality audio.")
+                    Toggle("\u{2026}except while music is playing", isOn: skipsHeadphonesDuringMusic)
+                        .disabled(!preferences.listensForWakeWord || !preferences.listensThroughHeadphones)
+                        .padding(.leading, 16)
                 } header: {
                     Text("Sessions")
                 } footer: {
@@ -237,6 +243,14 @@ struct SettingsView: View {
 
     private var keepsRepliesShort: Binding<Bool> {
         Binding(get: { voice.keepsRepliesShort }, set: { voice.setKeepsRepliesShort($0) })
+    }
+
+    private var listensThroughHeadphones: Binding<Bool> {
+        Binding(get: { preferences.listensThroughHeadphones }, set: { preferences.setListensThroughHeadphones($0) })
+    }
+
+    private var skipsHeadphonesDuringMusic: Binding<Bool> {
+        Binding(get: { preferences.skipsHeadphonesDuringMusic }, set: { preferences.setSkipsHeadphonesDuringMusic($0) })
     }
 
     private var listensForWakeWord: Binding<Bool> {

@@ -7,6 +7,8 @@ final class Preferences: ObservableObject {
     private static let permissionsKey = "asksForPermissionInNotch"
     private static let pinnedKey = "keepsPanelOpen"
     private static let wakeWordKey = "listensForWakeWord"
+    private static let headphonesKey = "listensThroughHeadphones"
+    private static let musicRuleKey = "skipsHeadphonesDuringMusic"
 
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
@@ -16,6 +18,10 @@ final class Preferences: ObservableObject {
     @Published private(set) var isPanelPinned: Bool
     /// Listen on-device for "Hey orchestrator" to dictate a message to the orchestrator session hands-free.
     @Published private(set) var listensForWakeWord: Bool
+    /// When the user is away from the Mac, listen for the wake word through the AirPods' mic (call-quality audio).
+    @Published private(set) var listensThroughHeadphones: Bool
+    /// …but not while Spotify or Apple Music is playing, so music keeps full quality.
+    @Published private(set) var skipsHeadphonesDuringMusic: Bool
     private let muteHotkey: Hotkey
 
     init(muteHotkey: Hotkey) {
@@ -24,6 +30,8 @@ final class Preferences: ObservableObject {
         asksForPermission = UserDefaults.standard.object(forKey: Self.permissionsKey) as? Bool ?? true
         isPanelPinned = UserDefaults.standard.bool(forKey: Self.pinnedKey)
         listensForWakeWord = UserDefaults.standard.bool(forKey: Self.wakeWordKey)
+        listensThroughHeadphones = UserDefaults.standard.bool(forKey: Self.headphonesKey)
+        skipsHeadphonesDuringMusic = UserDefaults.standard.object(forKey: Self.musicRuleKey) as? Bool ?? true
         self.muteHotkey = muteHotkey
         muteShortcut = Self.savedMuteShortcut.flatMap { muteHotkey.register($0) ? $0 : nil }
     }
@@ -46,6 +54,16 @@ final class Preferences: ObservableObject {
     func setListensForWakeWord(_ enabled: Bool) {
         listensForWakeWord = enabled
         UserDefaults.standard.set(enabled, forKey: Self.wakeWordKey)
+    }
+
+    func setListensThroughHeadphones(_ enabled: Bool) {
+        listensThroughHeadphones = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.headphonesKey)
+    }
+
+    func setSkipsHeadphonesDuringMusic(_ enabled: Bool) {
+        skipsHeadphonesDuringMusic = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.musicRuleKey)
     }
 
     func setOpensAtLogin(_ enabled: Bool) {

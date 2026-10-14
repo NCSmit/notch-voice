@@ -36,6 +36,7 @@ struct NotchRootView: View {
             tab: state.shownTab,
             selectTab: { tab in withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.tab = tab } },
             handsFree: state.handsFree,
+            listensOnHeadphones: state.listensOnHeadphones,
             isOrchestratorMode: voice.isOrchestratorMode,
             setOrchestratorMode: voice.setOrchestratorMode,
             isPinned: preferences.isPanelPinned,
@@ -68,6 +69,7 @@ struct NotchView: View {
     let tab: NotchTab
     let selectTab: @MainActor (NotchTab) -> Void
     let handsFree: HandsFreeController.Phase
+    let listensOnHeadphones: Bool
     let isOrchestratorMode: Bool
     let setOrchestratorMode: @MainActor (Bool) -> Void
     let isPinned: Bool
@@ -100,7 +102,7 @@ struct NotchView: View {
                     $0.opacity(showsBody ? 1 : 0)
                 }
             if !isExpanded, showsIndicator {
-                HandsFreeIndicator(phase: handsFree, accent: theme.accent)
+                HandsFreeIndicator(phase: handsFree, onHeadphones: listensOnHeadphones, accent: theme.accent)
                     .frame(width: NotchMetrics.indicatorWidth, height: metrics.notch.height)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.trailing, NotchMetrics.closedTopRadius)
@@ -414,13 +416,14 @@ extension VoicePanel {
 /// A small mic beside the closed notch: armed for "Hey orchestrator", hearing a message, or unable to listen.
 struct HandsFreeIndicator: View {
     let phase: HandsFreeController.Phase
+    let onHeadphones: Bool
     let accent: LinearGradient
 
     var body: some View {
         Group {
             switch phase {
             case .listening:
-                Image(systemName: "mic.fill").foregroundStyle(accent).opacity(0.85)
+                Image(systemName: onHeadphones ? "headphones" : "mic.fill").foregroundStyle(accent).opacity(0.85)
             case .capturing, .sending:
                 Image(systemName: "mic.fill").foregroundStyle(.red).symbolEffect(.pulse, isActive: true)
             case .failed:
@@ -436,7 +439,7 @@ struct HandsFreeIndicator: View {
 
     private var help: String {
         switch phase {
-        case .listening: "Listening for \u{201C}Hey orchestrator\u{201D}"
+        case .listening: onHeadphones ? "Listening for \u{201C}Hey orchestrator\u{201D} through your AirPods" : "Listening for \u{201C}Hey orchestrator\u{201D}"
         case .capturing: "Taking your message"
         case .sending: "Sending to the orchestrator"
         case .failed(let reason): reason

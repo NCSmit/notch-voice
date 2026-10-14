@@ -69,6 +69,15 @@ final class DictationMonitor: ObservableObject {
         return false
     }
 
+    /// Whether Spotify or Apple Music is playing audio right now (Core Audio's per-process output state).
+    nonisolated static func musicIsPlaying() -> Bool {
+        audioProcesses().contains { process in
+            guard let running: UInt32 = property(process, kAudioProcessPropertyIsRunningOutput), running != 0,
+                  let bundle = bundleID(process) else { return false }
+            return bundle.hasPrefix("com.spotify.client") || bundle == "com.apple.Music"
+        }
+    }
+
     private nonisolated static func audioProcesses() -> [AudioObjectID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,

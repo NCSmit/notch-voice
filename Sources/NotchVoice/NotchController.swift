@@ -70,6 +70,7 @@ final class NotchState: ObservableObject {
     @Published var orchestratorID: String?
     @Published var prs: [TrackedPR] = []
     @Published var handsFree = HandsFreeController.Phase.off
+    @Published var listensOnHeadphones = false
     /// Shown while hands-free takes a message: a status line, Wispr's text field, and Apple's live transcript.
     @Published var capture: CaptureState?
     @Published var captureText = ""
@@ -108,6 +109,7 @@ final class NotchController: CaptureSurface {
     private var prChanges: AnyCancellable?
     private var handsFreeChanges: AnyCancellable?
     private weak var handsFree: HandsFreeController?
+    private var headphoneMicChanges: AnyCancellable?
     private var glowPreview = 0
     private let preferences: Preferences
     private var reopenAfterPrompt = false
@@ -140,6 +142,9 @@ final class NotchController: CaptureSurface {
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
         }
         self.handsFree = handsFree
+        headphoneMicChanges = handsFree.$onHeadphones.sink { [weak self] on in
+            MainActor.assumeIsolated { self?.state.listensOnHeadphones = on }
+        }
         handsFreeChanges = handsFree.$phase.sink { [weak self] phase in
             MainActor.assumeIsolated {
                 withAnimation(.easeInOut(duration: 0.25)) { self?.state.handsFree = phase }

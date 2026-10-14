@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import os
 
@@ -26,7 +27,14 @@ final class HandsFreeController: ObservableObject {
     }
 
     @Published private(set) var phase = Phase.off
+    /// Listening through the AirPods (the user is away), for the indicator.
+    @Published private(set) var onHeadphones = false
     weak var surface: CaptureSurface?
+    private let preferences: Preferences
+    private var micTimer: Timer?
+    private var headphoneChanges: AnyCancellable?
+    /// Away = no keyboard, mouse or trackpad use for this long.
+    private static let awayAfter: TimeInterval = 120
 
     private let listener = WakeWordListener()
     private let dictation: DictationMonitor
@@ -43,6 +51,7 @@ final class HandsFreeController: ObservableObject {
 
     init(dictation: DictationMonitor, preferences: Preferences) {
         self.dictation = dictation
+        self.preferences = preferences
         listener.onWake = { [weak self] in self?.wake() }
         listener.onStop = { [weak self] reason, heard in self?.captureEnded(reason, heard: heard) }
         listener.onUnavailable = { [weak self] reason in self?.listenerStopped(reason) }
@@ -50,6 +59,15 @@ final class HandsFreeController: ObservableObject {
         enabledChanges = preferences.$listensForWakeWord.sink { [weak self] on in
             MainActor.assumeIsolated { self?.setEnabled(on) }
         }
+        headphoneChanges = preferences.$listensThroughHeadphones.combineLatest(preferences.$skipsHeadphonesDuringMusic)
+            .dropFirst().sink { [weak self] _ in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.followUser() } }
+            }
+        let timer = Timer(timeInterval: 4, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.followUser() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        micTimer = timer
     }
 
     // MARK: Arming
@@ -80,7 +98,8 @@ final class HandsFreeController: ObservableObject {
                 // Don't open the microphone just to fail again; wait for the setting to change.
                 reason = listener.unavailableReason()
             } else {
-                listener.start()
+                listener.start(on: chosenMicrophone())
+                onHeadphones = listener.device.map(WakeWordListener.isBluetooth) ?? false
                 reason = listener.isRunning ? nil : (listener.unavailableReason() ?? "The microphone couldn't be started; retrying.")
             }
             guard isEnabled else { return }
@@ -93,6 +112,42 @@ final class HandsFreeController: ObservableObject {
                 phase = .listening
             }
         }
+    }
+
+    // MARK: Which microphone
+
+    /// Near the Mac: the built-in mic, so the AirPods stay in full-quality audio. Away (no input for two minutes),
+    /// with "Listen through AirPods" on: the AirPods mic, unless music is playing and the music rule is on.
+    private func chosenMicrophone() -> AVCaptureDevice? {
+        let builtIn = WakeWordListener.nonBluetoothMicrophone()
+        guard preferences.listensThroughHeadphones, let headphones = WakeWordListener.headphoneMicrophone() else { return builtIn }
+        let away = Self.secondsSinceInput() > Self.awayAfter
+        let musicBlocks = preferences.skipsHeadphonesDuringMusic && DictationMonitor.musicIsPlaying()
+        if builtIn == nil { return musicBlocks ? nil : headphones }  // lid closed: AirPods are the only mic
+        return away && !musicBlocks ? headphones : builtIn
+    }
+
+    /// Switch microphones when the user comes and goes. Only between messages, never mid-dictation.
+    private func followUser() {
+        guard isEnabled, phase == .listening, listener.isRunning, listener.mode == .wake else { return }
+        let wanted = chosenMicrophone()
+        guard wanted?.uniqueID != listener.device?.uniqueID else { return }
+        log.info("switching wake-word mic to \(wanted?.localizedName ?? "none", privacy: .public)")
+        listener.stop()
+        if let wanted {
+            listener.start(on: wanted)
+            onHeadphones = WakeWordListener.isBluetooth(wanted)
+            if !listener.isRunning { arm() }
+        } else {
+            onHeadphones = false
+            phase = .failed("Paused while music plays: the only mic is your AirPods, and listening would drop the music to call quality.")
+            scheduleRetry(after: 10)
+        }
+    }
+
+    private static func secondsSinceInput() -> TimeInterval {
+        let types: [CGEventType] = [.keyDown, .mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel, .leftMouseDragged]
+        return types.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? 0
     }
 
     private func scheduleRetry(after seconds: TimeInterval) {

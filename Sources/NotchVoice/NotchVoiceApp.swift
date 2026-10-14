@@ -23,7 +23,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notch: NotchController?
     private var settings: SettingsWindowController?
     private var permissions: PermissionCenter?
+    private var sessions: SessionStore?
+    private var tracker: TrackerStore?
     private var permissionSetting: AnyCancellable?
+    private var dictation: DictationMonitor?
+    private var dictationChanges: AnyCancellable?
+    private var handsFree: HandsFreeController?
+    private var player: SpeechPlayer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -31,11 +37,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let voice = VoiceController()
+        let player = SpeechPlayer()
+        player.start()
+        voice.attach(player)
+        self.player = player
+        let dictation = DictationMonitor()
+        dictationChanges = dictation.$isDictating.sink { dictating in
+            MainActor.assumeIsolated { voice.setDictating(dictating) }
+        }
+        dictation.start()
+        self.dictation = dictation
         let muteHotkey = Hotkey { [weak self] in
             voice.setEnabled(!voice.isEnabled)
             self?.notch?.flash()
         }
         let preferences = Preferences(muteHotkey: muteHotkey)
+        preferences.attachSkipHotkeys(
+            skip: Hotkey { voice.skip() },
+            skipAll: Hotkey { voice.skip(all: true) }
+        )
+        let handsFree = HandsFreeController(dictation: dictation, preferences: preferences, voice: voice)
+        self.handsFree = handsFree
         let permissions = PermissionCenter()
         permissions.isEnabled = { preferences.asksForPermission }
         permissionSetting = preferences.$asksForPermission.dropFirst().filter { !$0 }.sink { _ in
@@ -43,9 +65,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         permissions.start()
         self.permissions = permissions
+        let sessions = SessionStore()
+        sessions.start()
+        self.sessions = sessions
+        let tracker = TrackerStore()
+        tracker.start(sessions: sessions)
+        self.tracker = tracker
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker, handsFree: handsFree) { settings.show() }
+        handsFree.surface = notch
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
     }

@@ -48,7 +48,8 @@ if os.path.exists(path):
         f.write("\n")
 EOF
   rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
-  rm -rf "$HOME/.claude/notchvoice/sessions"
+  rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/skills/orchestrator"
+  rm -f "$HOME/.claude/notchvoice/orchestrator.json"
   python3 hook/notchvoice_desktop.py
   echo "NotchVoice and its hooks are removed. Restart Claude Code."
   exit 0
@@ -85,14 +86,23 @@ wanted = [
     ("Stop", {"type": "command", "command": "python3 ~/.claude/hooks/speak.py", "async": True, "timeout": 300}),
     ("PermissionRequest", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_permission.py", "timeout": 600}),
     ("UserPromptSubmit", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_brief.py", "timeout": 10}),
-] + [(event, sessions_hook) for event in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")]
+] + [(event, sessions_hook) for event in ("UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")]
+# SessionStart runs in the foreground so it can hand a compacted session back its saved working state.
+wanted.append(("SessionStart", {k: v for k, v in sessions_hook.items() if k != "async"}))
 tool_events = {"PreToolUse", "PostToolUse", "PermissionRequest"}
 hooks = settings.setdefault("hooks", {})
 added = []
 for event, hook in wanted:
     script = hook["command"].rsplit("/", 1)[-1]
     groups = hooks.setdefault(event, [])
-    if not any(script in h.get("command", "") for group in groups for h in group.get("hooks", [])):
+    existing = [h for group in groups for h in group.get("hooks", []) if script in h.get("command", "")]
+    for h in existing:
+        if h != hook:  # an older install registered it differently
+            h.clear()
+            h.update(hook)
+            if event not in added:
+                added.append(event)
+    if not existing:
         groups.append({"matcher": "*", "hooks": [dict(hook)]} if event in tool_events else {"hooks": [dict(hook)]})
         if event not in added:
             added.append(event)
@@ -111,6 +121,10 @@ if added:
 if blocked:
     print("Denied the desktop speak tool in Claude Code, which reads its replies aloud with the Stop hook.")
 EOF
+
+mkdir -p "$HOME/.claude/skills/orchestrator"
+cp orchestrator/SKILL.md orchestrator/snapshot.py "$HOME/.claude/skills/orchestrator/"
+echo "Installed the /orchestrator command for Claude Code."
 
 ./build.sh --install
 python3 hook/notchvoice_desktop.py

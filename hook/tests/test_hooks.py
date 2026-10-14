@@ -380,3 +380,68 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(status["title"]), sessions.TITLE_LENGTH)
         status = self.send("PreToolUse", tool_name="mcp__tracker__save_issue", tool_input={})
         self.assertEqual(status["activity"], "Using save issue")
+
+
+class OrchestratorModeTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        root = self.dir.name
+        self.settings = os.path.join(root, "tts_settings.json")
+        self.orchestrator = os.path.join(root, "orchestrator.json")
+        self.sessions = os.path.join(root, "sessions")
+        os.makedirs(self.sessions)
+        for module, names in ((speak, ("ORCHESTRATOR_FILE", "SESSIONS_DIR")), (brief, ("ORCHESTRATOR_FILE", "SETTINGS_FILE"))):
+            for name in names:
+                value = {"ORCHESTRATOR_FILE": self.orchestrator, "SESSIONS_DIR": self.sessions, "SETTINGS_FILE": self.settings}[name]
+                patcher = mock.patch.object(module, name, value)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+
+    def write(self, path, data):
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def test_everyone_speaks_until_the_mode_is_on_and_a_session_claims_it(self):
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {}))
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+        self.write(self.orchestrator, {"session_id": "boss"})
+        self.assertTrue(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+        self.assertFalse(speak.silenced({"session_id": "boss"}, {"orchestrator": True}))
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": False}))
+
+    def test_samples_and_desktop_chats_always_speak(self):
+        self.write(self.orchestrator, {"session_id": "boss"})
+        self.assertFalse(speak.silenced({}, {"orchestrator": True}))
+
+    def test_an_ended_orchestrator_hands_the_voice_back(self):
+        self.write(self.orchestrator, {"session_id": "boss"})
+        self.write(os.path.join(self.sessions, "boss.json"), {"state": "ended"})
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+
+    def test_only_the_orchestrator_is_reminded_to_keep_replies_short(self):
+        self.write(self.settings, {"orchestrator": True})
+        self.write(self.orchestrator, {"session_id": "boss"})
+        with mock.patch.object(brief, "MUTE_FILE", os.path.join(self.dir.name, "missing")):
+            self.assertEqual(run_main(brief, {"session_id": "worker"}), "")
+            self.assertIn("read aloud", run_main(brief, {"session_id": "boss"}))
+
+
+class HandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for name, sub in (("SESSIONS_DIR", "sessions"), ("HANDOFF_DIR", "handoffs")):
+            os.makedirs(os.path.join(self.dir.name, sub))
+            patcher = mock.patch.object(sessions, name, os.path.join(self.dir.name, sub))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_compacted_session_gets_its_saved_state_back(self):
+        with open(os.path.join(self.dir.name, "handoffs", "abc.json".replace(".json", ".md")), "w") as f:
+            f.write("## Goal\nShip the session list")
+        output = run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"})
+        self.assertIn("Ship the session list", json.loads(output)["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_normal_start_adds_nothing(self):
+        self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")

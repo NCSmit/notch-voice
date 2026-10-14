@@ -20,6 +20,9 @@ struct NotchRootView: View {
             pendingCount: state.pendingCount,
             sessions: state.sessions,
             speakingSession: voice.isSpeaking ? voice.speakingSession : nil,
+            orchestratorID: state.orchestratorID,
+            isOrchestratorMode: voice.isOrchestratorMode,
+            setOrchestratorMode: voice.setOrchestratorMode,
             setEnabled: voice.setEnabled,
             answer: answer,
             openSettings: openSettings
@@ -38,6 +41,9 @@ struct NotchView: View {
     let pendingCount: Int
     let sessions: [ClaudeSession]
     let speakingSession: String?
+    let orchestratorID: String?
+    let isOrchestratorMode: Bool
+    let setOrchestratorMode: @MainActor (Bool) -> Void
     let setEnabled: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
@@ -73,13 +79,16 @@ struct NotchView: View {
                     VoicePanel(
                         isEnabled: isEnabled,
                         isSpeaking: isSpeaking,
+                        isOrchestratorMode: isOrchestratorMode,
+                        hasOrchestrator: orchestratorID != nil,
                         accent: theme.accent,
                         setEnabled: setEnabled,
+                        setOrchestratorMode: setOrchestratorMode,
                         openSettings: openSettings
                     )
                     .frame(height: NotchMetrics.voiceRowHeight)
                     if !sessions.isEmpty {
-                        SessionList(sessions: sessions, speakingSession: speakingSession, accent: theme.accent)
+                        SessionList(sessions: sessions, speakingSession: speakingSession, orchestratorID: orchestratorID, accent: theme.accent)
                     }
                 }
                 .frame(maxHeight: .infinity, alignment: .top)
@@ -167,8 +176,11 @@ struct NotchGlow: View {
 struct VoicePanel: View {
     let isEnabled: Bool
     let isSpeaking: Bool
+    let isOrchestratorMode: Bool
+    let hasOrchestrator: Bool
     let accent: LinearGradient
     let setEnabled: @MainActor (Bool) -> Void
+    let setOrchestratorMode: @MainActor (Bool) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
@@ -193,6 +205,19 @@ struct VoicePanel: View {
             .contentShape(Rectangle())
             .onTapGesture { setEnabled(!isEnabled) }
             .accessibilityElement(children: .combine)
+
+            Button { setOrchestratorMode(!isOrchestratorMode) } label: {
+                Image(systemName: isOrchestratorMode ? "crown.fill" : "person.3.fill")
+                    .font(.system(size: isOrchestratorMode ? 12 : 11, weight: .semibold))
+                    .foregroundStyle(isOrchestratorMode ? AnyShapeStyle(accent) : AnyShapeStyle(Color.white.opacity(0.75)))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(isOrchestratorMode ? "Orchestrator mode: only the orchestrator speaks. Click to hear every session." : "Every session speaks. Click for orchestrator mode.")
+            .accessibilityLabel("Orchestrator mode")
+            .accessibilityValue(isOrchestratorMode ? "On" : "Off")
 
             Button(action: openSettings) {
                 Image(systemName: "gearshape.fill")
@@ -225,19 +250,22 @@ struct VoicePanel: View {
 
     private var status: String {
         if isSpeaking { return "Speaking…" }
-        return isEnabled ? "Replies are read aloud" : "Off"
+        guard isEnabled else { return "Off" }
+        guard isOrchestratorMode else { return "Replies are read aloud" }
+        return hasOrchestrator ? "Only the orchestrator speaks" : "Run /orchestrator in a session"
     }
 }
 
 struct SessionList: View {
     let sessions: [ClaudeSession]
     let speakingSession: String?
+    let orchestratorID: String?
     let accent: LinearGradient
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(sessions) { session in
-                SessionRow(session: session, isSpeaking: session.id == speakingSession, accent: accent)
+                SessionRow(session: session, isSpeaking: session.id == speakingSession, isOrchestrator: session.id == orchestratorID, accent: accent)
                     .frame(height: NotchMetrics.sessionRowHeight)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -252,6 +280,7 @@ struct SessionList: View {
 struct SessionRow: View {
     let session: ClaudeSession
     let isSpeaking: Bool
+    let isOrchestrator: Bool
     let accent: LinearGradient
 
     var body: some View {
@@ -259,10 +288,18 @@ struct SessionRow: View {
             indicator
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(session.state == .idle && !isSpeaking ? 0.7 : 1))
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    if isOrchestrator {
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(accent)
+                            .accessibilityLabel("Orchestrator")
+                    }
+                    Text(isOrchestrator ? "Orchestrator" : session.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(session.state == .idle && !isSpeaking ? 0.7 : 1))
+                        .lineLimit(1)
+                }
                 Text(subtitle)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(session.state == .waiting ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.white.opacity(0.5)))

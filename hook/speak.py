@@ -18,6 +18,8 @@ import tempfile
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
+ORCHESTRATOR_FILE = os.path.join(HOME, ".claude", "notchvoice", "orchestrator.json")
+SESSIONS_DIR = os.path.join(HOME, ".claude", "notchvoice", "sessions")
 DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 MUSIC_APPS = ["Spotify", "Music"]
 
@@ -81,6 +83,34 @@ def load_settings():
     except (OSError, ValueError):
         return {}
     return settings if isinstance(settings, dict) else {}
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def orchestrator_session(settings):
+    """The session that speaks for all the others in orchestrator mode, or None when every session speaks."""
+    if not settings.get("orchestrator"):
+        return None
+    session = read_json(ORCHESTRATOR_FILE).get("session_id")
+    if not isinstance(session, str) or not session:
+        return None
+    if read_json(os.path.join(SESSIONS_DIR, f"{session}.json")).get("state") == "ended":
+        return None
+    return session
+
+
+def silenced(payload, settings):
+    orchestrator = orchestrator_session(settings)
+    session = payload.get("session_id")
+    # Samples and desktop chats carry no session, so they always speak.
+    return bool(orchestrator and session and session != orchestrator)
 
 
 def music_level(settings):
@@ -181,6 +211,8 @@ def main():
         return
 
     settings = load_settings()
+    if silenced(payload, settings):
+        return
     cmd = ["say"]
     voice = settings.get("voice") or os.environ.get("CLAUDE_TTS_VOICE")
     if voice:

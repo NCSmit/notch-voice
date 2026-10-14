@@ -47,17 +47,21 @@ struct ClaudeSession: Identifiable, Equatable {
 @MainActor
 final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [ClaudeSession] = []
+    @Published private(set) var orchestratorID: String?
 
     static let directory = URL.homeDirectory.appending(path: ".claude/notchvoice/sessions")
+    // Written by /orchestrator's snapshot.py claim; it sits next to the sessions folder, so a second watcher follows it.
+    static let orchestratorFile = URL.homeDirectory.appending(path: ".claude/notchvoice/orchestrator.json")
     // Status files of sessions that ended or went quiet this long ago are deleted.
     private static let pruneAge: TimeInterval = 24 * 60 * 60
 
-    private var watcher: DispatchSourceFileSystemObject?
+    private var watchers: [DispatchSourceFileSystemObject] = []
     private var timer: Timer?
 
     func start() {
         try? FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
-        watch()
+        watch(Self.directory)
+        watch(Self.orchestratorFile.deletingLastPathComponent())
         // Sessions age out of the list without any file changing, so look again now and then.
         let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.reload() }
@@ -80,6 +84,10 @@ final class SessionStore: ObservableObject {
                 try? FileManager.default.removeItem(at: file)
             }
         }
+        let orchestrator = (try? Data(contentsOf: Self.orchestratorFile))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["session_id"] as? String
+        let live = orchestrator.flatMap { id in found.contains { $0.id == id } ? id : nil }
+        if orchestratorID != live { orchestratorID = live }
         let shown = Array(ClaudeSession.sorted(found).prefix(ClaudeSession.maxShown))
         if shown != sessions {
             sessions = shown
@@ -87,8 +95,8 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func watch() {
-        let descriptor = open(Self.directory.path, O_EVTONLY)
+    private func watch(_ directory: URL) {
+        let descriptor = open(directory.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write, queue: .main)
         source.setEventHandler { [weak self] in
@@ -96,6 +104,6 @@ final class SessionStore: ObservableObject {
         }
         source.setCancelHandler { close(descriptor) }
         source.resume()
-        watcher = source
+        watchers.append(source)
     }
 }

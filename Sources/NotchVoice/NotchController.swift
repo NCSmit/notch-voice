@@ -51,6 +51,7 @@ final class NotchState: ObservableObject {
     @Published var prompt: PermissionPrompt?
     @Published var pendingCount = 0
     @Published var sessions: [ClaudeSession] = []
+    @Published var orchestratorID: String?
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
@@ -69,6 +70,7 @@ final class NotchController {
     private var themeChanges: AnyCancellable?
     private var permissionChanges: AnyCancellable?
     private var sessionChanges: AnyCancellable?
+    private var orchestratorChanges: AnyCancellable?
     private var glowPreview = 0
 
     init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, openSettings: @escaping @MainActor () -> Void) {
@@ -87,6 +89,9 @@ final class NotchController {
         }
         permissionChanges = permissions.$queue.sink { [weak self] queue in
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
+        }
+        orchestratorChanges = sessions.$orchestratorID.sink { [weak self] id in
+            MainActor.assumeIsolated { self?.state.orchestratorID = id }
         }
         sessionChanges = sessions.$sessions.sink { [weak self] list in
             MainActor.assumeIsolated {

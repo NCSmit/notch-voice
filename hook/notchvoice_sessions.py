@@ -9,6 +9,9 @@ Each event rewrites ~/.claude/notchvoice/sessions/<session_id>.json with:
   project   the folder it runs in; cwd and transcript_path are kept too, for tools that want the full picture
   updated   when the event happened, in seconds since 1970
 Async hooks can finish out of order, so an event never overwrites a newer one.
+
+SessionStart is registered without async: after a compaction it hands the session back the working state it saved
+to ~/.claude/notchvoice/handoffs/<session_id>.md, so nothing the orchestrator asked it to keep is lost.
 """
 import json
 import os
@@ -17,6 +20,8 @@ import sys
 import time
 
 SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "sessions")
+# The orchestrator asks a session to save its working state here before it compacts; it is handed back afterwards.
+HANDOFF_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "handoffs")
 TITLE_LENGTH = 60
 ACTIVITY_LENGTH = 90
 STATES = {
@@ -134,6 +139,19 @@ def main():
         write(path, updated_status(previous, payload, now))
     except OSError:
         pass
+    if payload["hook_event_name"] == "SessionStart" and payload.get("source") == "compact":
+        restore_handoff(session)
+
+
+def restore_handoff(session):
+    try:
+        with open(os.path.join(HANDOFF_DIR, f"{session}.md")) as f:
+            notes = f.read(20000)
+    except OSError:
+        return
+    if notes.strip():
+        context = "Your conversation was just compacted. Before that, you saved this working state; carry on from it:\n\n" + notes
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
 
 
 if __name__ == "__main__":

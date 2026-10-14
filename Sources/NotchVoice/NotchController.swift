@@ -79,6 +79,9 @@ final class NotchState: ObservableObject {
     @Published var captureText = ""
     @Published var captureFocus = 0
     @Published var question: QuestionPrompt?
+    /// "Sent: …" on a question card, or "Allowed"/"Denied" on a permission card, shown briefly before it closes.
+    @Published var questionResult: String?
+    @Published var permissionResult: PermissionResponse?
     @Published var questionProgress = QuestionProgress(count: 0)
     @Published var notice: BlockedNotice?
     @Published var tab: NotchTab = .sessions
@@ -119,6 +122,10 @@ final class NotchController: CaptureSurface {
     private var questionChanges: AnyCancellable?
     private var noticeChanges: AnyCancellable?
     private let questions: QuestionCenter
+    private weak var permissions: PermissionCenter?
+    /// A card that was just answered stays up, showing the answer, until then.
+    private var holdCardUntil = Date.distantPast
+    private static let confirmation: TimeInterval = 1.4
     private let notices: NoticeCenter
     private var glowPreview = 0
     private let preferences: Preferences
@@ -131,7 +138,9 @@ final class NotchController: CaptureSurface {
         self.notices = notices
         self.preferences = preferences
         let root = NotchRootView(
-            state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings,
+            state: state, voice: voice, preferences: preferences,
+            answer: { [weak self] id, response in self?.answerPermission(id, response) },
+            openSettings: openSettings,
             sendCapture: { [weak handsFree] in handsFree?.sendNow() },
             cancelCapture: { [weak handsFree] in handsFree?.cancelFromField() },
             questionActions: QuestionActions(
@@ -162,12 +171,14 @@ final class NotchController: CaptureSurface {
         themeChanges = preferences.$theme.dropFirst().removeDuplicates().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.previewGlow() }
         }
+        self.permissions = permissions
         permissionChanges = permissions.$queue.sink { [weak self] queue in
-            MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
+            MainActor.assumeIsolated { self?.permissionQueueChanged() }
         }
         self.handsFree = handsFree
-        questionChanges = questions.$queue.sink { [weak self] queue in
-            MainActor.assumeIsolated { self?.showQuestion(queue.first) }
+        updateCardFlag()  // clear one left behind by a previous run
+        questionChanges = questions.$queue.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.questionQueueChanged() }
         }
         noticeChanges = notices.$current.sink { [weak self] notice in
             MainActor.assumeIsolated {
@@ -264,6 +275,56 @@ final class NotchController: CaptureSurface {
     // MARK: Questions
 
     private var needsMouse: Bool { state.prompt != nil || state.question != nil || state.capture != nil }
+    /// Spoken answers count only once the card has been read out, so the mic never hears the read-out.
+    private var readOutDone = true
+    private static let cardFile = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice_card_open")
+
+    /// While a question or permission card is open, speak.py holds new replies (see CARD_FILE there).
+    private func updateCardFlag() {
+        if state.prompt != nil || state.question != nil {
+            FileManager.default.createFile(atPath: Self.cardFile.path, contents: nil)
+        } else {
+            try? FileManager.default.removeItem(at: Self.cardFile)
+        }
+    }
+
+    private func readOut(_ text: String) {
+        readOutDone = false
+        voice.announceCard(text) { [weak self] in self?.readOutDone = true }
+    }
+
+    private func questionQueueChanged() {
+        let wait = holdCardUntil.timeIntervalSinceNow
+        guard wait <= 0 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                MainActor.assumeIsolated { self?.questionQueueChanged() }
+            }
+            return
+        }
+        state.questionResult = nil
+        showQuestion(questions.queue.first)
+    }
+
+    private func permissionQueueChanged() {
+        let wait = holdCardUntil.timeIntervalSinceNow
+        guard wait <= 0 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                MainActor.assumeIsolated { self?.permissionQueueChanged() }
+            }
+            return
+        }
+        state.permissionResult = nil
+        let queue = permissions?.queue ?? []
+        showPermission(queue.first, count: queue.count)
+    }
+
+    private func answerPermission(_ id: UUID, _ response: PermissionResponse) {
+        if response != .dismiss {
+            state.permissionResult = response
+            holdCardUntil = Date().addingTimeInterval(Self.confirmation)
+        }
+        permissions?.answer(id, response)
+    }
 
     private func showQuestion(_ prompt: QuestionPrompt?) {
         guard prompt?.id != state.question?.id else { return }
@@ -275,6 +336,7 @@ final class NotchController: CaptureSurface {
         // Key (but not active) while a question is up, so "Other…" can be typed into without stealing focus.
         panel.allowsKey = prompt != nil || state.capture != nil
         setInteractive(needsMouse)
+        updateCardFlag()
         if prompt != nil {
             announceQuestion()
         } else {
@@ -288,7 +350,7 @@ final class NotchController: CaptureSurface {
         let numbers = ["one", "two", "three", "four"]
         let options = question.options.prefix(4).enumerated().map { "Option \(numbers[$0.offset]): \($0.element.label)." }
         let intro = state.questionProgress.index == 0 ? "\(prompt.sessionName) asks: " : ""
-        voice.announce(intro + question.text + " " + options.joined(separator: " "))
+        readOut(intro + question.text + " " + options.joined(separator: " "))
     }
 
     private func toggleOption(_ index: Int) {
@@ -303,7 +365,19 @@ final class NotchController: CaptureSurface {
         } else {
             state.questionProgress.picks[current] = [index]
             state.questionProgress.other[current] = ""
-            nextQuestion()
+            advanceAfterShowingPick()
+        }
+    }
+
+    /// Leave the pick highlighted for a moment so the user sees what was chosen, then move on.
+    private func advanceAfterShowingPick() {
+        let shownIndex = state.questionProgress.index
+        let shownID = state.question?.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.state.question?.id == shownID, self.state.questionProgress.index == shownIndex else { return }
+                self.nextQuestion()
+            }
         }
     }
 
@@ -321,7 +395,10 @@ final class NotchController: CaptureSurface {
             withAnimation(.easeInOut(duration: 0.2)) { state.questionProgress.index += 1 }
             announceQuestion()
         } else {
-            questions.answer(prompt.id, answers: QuestionPrompt.answers(for: prompt.questions, picks: progress.picks, other: progress.other))
+            let answers = QuestionPrompt.answers(for: prompt.questions, picks: progress.picks, other: progress.other)
+            state.questionResult = "Sent: " + prompt.questions.compactMap { answers[$0.text] }.joined(separator: " \u{00B7} ")
+            holdCardUntil = Date().addingTimeInterval(Self.confirmation)
+            questions.answer(prompt.id, answers: answers)
         }
     }
 
@@ -332,15 +409,19 @@ final class NotchController: CaptureSurface {
 
     /// A spoken answer to the question on screen ("option two", "the first one", an option's name). True if used.
     func handleSpokenAnswer(_ text: String) -> Bool {
-        guard let prompt = state.question else { return false }
+        guard let prompt = state.question, readOutDone else { return false }
         let question = prompt.questions[state.questionProgress.index]
         guard let action = QuestionVoice.parse(text, for: question) else { return false }
         captureLog.info("spoken answer: \(String(describing: action), privacy: .public)")
         switch action {
         case .pick(let indexes):
+            // Say the choice back, through the speech queue, so the user knows what was heard.
+            let numbers = ["one", "two", "three", "four"]
+            let said = indexes.map { "\(numbers[min($0, 3)]), \(question.options[$0].label)" }
+            voice.announceCard((indexes.count > 1 ? "Options " : "Option ") + said.joined(separator: "; and ") + ".") {}
             if question.multiSelect {
                 state.questionProgress.picks[state.questionProgress.index] = Set(indexes)
-                nextQuestion()
+                advanceAfterShowingPick()
             } else if let first = indexes.first {
                 toggleOption(first)
             }
@@ -471,10 +552,17 @@ final class NotchController: CaptureSurface {
     private func showPermission(_ prompt: PermissionPrompt?, count: Int) {
         guard state.prompt?.id != prompt?.id || state.pendingCount != count else { return }
         if prompt != nil, state.prompt == nil { reopenAfterPrompt = state.isOpen && preferences.isPanelPinned }
+        let isNew = prompt != nil && prompt?.id != state.prompt?.id
         withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
             state.prompt = prompt
             state.pendingCount = count
             if prompt != nil { state.isOpen = false }
+        }
+        updateCardFlag()
+        if let prompt, isNew {
+            let what = prompt.note ?? String(prompt.detail.prefix(120))
+            let who = prompt.sessionName.isEmpty ? "A session" : prompt.sessionName
+            readOut("\(who) wants to \(prompt.title.lowercased()): \(what)")
         }
         if prompt != nil {
             startTracking()

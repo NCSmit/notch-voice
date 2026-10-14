@@ -96,6 +96,14 @@ struct VoicePhrases: Codable, Equatable, Sendable {
         return result.trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-").union(.whitespacesAndNewlines))
     }
 
+    /// What the assistant is called: the wake phrase without its greeting, capitalised ("hey computer" → "Computer").
+    var assistantName: String {
+        var parts = Self.words(wake)
+        if parts.count > 1, Self.greetings.contains(parts[0]) { parts.removeFirst() }
+        let name = parts.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+        return name.isEmpty ? "Claude" : name
+    }
+
     /// Hints for the recognizer, so it favours these words.
     var recognizerHints: [String] {
         [wake, Self.words(wake).last ?? wake, send, cancel, skip, skipAll]

@@ -63,6 +63,8 @@ enum QuestionVoice {
 struct QuestionCard: View {
     let prompt: QuestionPrompt
     let progress: QuestionProgress
+    /// "Sent: …" once answered, shown in place of the controls until the card closes.
+    let result: String?
     let accent: LinearGradient
     let toggle: @MainActor (Int) -> Void
     let setOther: @MainActor (String) -> Void
@@ -91,6 +93,16 @@ struct QuestionCard: View {
                     optionRow(index, option)
                 }
             }
+            if let result {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                    Text(result).lineLimit(1)
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(height: 26)
+                .transition(.opacity)
+            } else {
             HStack(spacing: 8) {
                 TextField("", text: Binding(get: { progress.other[progress.index] }, set: { setOther($0) }),
                           prompt: Text("Other\u{2026}").foregroundStyle(.white.opacity(0.4)))
@@ -109,6 +121,7 @@ struct QuestionCard: View {
                         .buttonStyle(NotchPillStyle(prominent: true, accent: accent))
                         .disabled(!hasAnswer)
                 }
+            }
             }
         }
         .padding(.horizontal, 20)
@@ -130,8 +143,8 @@ struct QuestionCard: View {
                     .background(Capsule().fill(accent))
             }
             Text("\(prompt.sessionName) asks")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(1)
             if prompt.questions.count > 1 {
                 Text("\(progress.index + 1) of \(prompt.questions.count)")
@@ -160,6 +173,8 @@ struct QuestionCard: View {
                 Group {
                     if question.multiSelect {
                         Image(systemName: selected ? "checkmark.square.fill" : "square")
+                    } else if selected {
+                        Image(systemName: "checkmark.circle.fill")
                     } else {
                         Text("\(index + 1)").font(.system(size: 10, weight: .bold).monospacedDigit())
                     }
@@ -185,7 +200,11 @@ struct QuestionCard: View {
             }
             .padding(.horizontal, 9)
             .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(selected ? 0.14 : hovered == index ? 0.09 : 0.05)))
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(hovered == index ? 0.09 : 0.05))
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(accent).opacity(selected ? 0.3 : 0)
+            }
+            .animation(.easeOut(duration: 0.15), value: selected)
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(accent, lineWidth: 1).opacity(selected ? 1 : 0))
             .contentShape(Rectangle())
         }

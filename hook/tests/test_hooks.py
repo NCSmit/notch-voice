@@ -635,3 +635,31 @@ class BlockedNoticeTests(unittest.TestCase):
                 with open(os.path.join(folder, "n", files[0])) as f:
                     notice = json.load(f)
         self.assertEqual((notice["project"], notice["title"], notice["detail"]), ("demo", "Running Clean", "rm -rf build"))
+
+
+class CardOrderTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for name, value in (("CARD_FILE", os.path.join(self.dir.name, "card")), ("OWNER_FILE", os.path.join(self.dir.name, "owner"))):
+            patcher = mock.patch.object(speak, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_replies_wait_while_a_card_is_open(self):
+        self.assertFalse(speak.card_is_open())
+        open(speak.CARD_FILE, "w").close()
+        self.assertTrue(speak.card_is_open())
+        threading.Timer(0.4, os.remove, [speak.CARD_FILE]).start()
+        started = time.time()
+        speak.wait_for_card_to_close()
+        self.assertGreaterEqual(time.time() - started, 0.3)
+
+    def test_a_card_read_out_waits_only_for_the_reply_already_speaking(self):
+        self.assertFalse(speak.someone_is_speaking())
+        sleeper = subprocess.Popen(["sleep", "5"])
+        self.addCleanup(sleeper.kill)
+        speak.write_owner(sleeper.pid)
+        self.assertTrue(speak.someone_is_speaking())
+        speak.write_owner(999999)  # a speaker that has gone away doesn't count
+        self.assertFalse(speak.someone_is_speaking())

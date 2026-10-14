@@ -20,6 +20,8 @@ struct NotchRootView: View {
         NotchView(
             question: state.question,
             questionProgress: state.questionProgress,
+            questionResult: state.questionResult,
+            permissionResult: state.permissionResult,
             questionActions: questionActions,
             notice: state.notice,
             noticeActions: noticeActions,
@@ -68,6 +70,8 @@ struct QuestionActions {
 struct NotchView: View {
     let question: QuestionPrompt?
     let questionProgress: QuestionProgress
+    let questionResult: String?
+    let permissionResult: PermissionResponse?
     let questionActions: QuestionActions
     let notice: BlockedNotice?
     let noticeActions: (go: @MainActor () -> Void, dismiss: @MainActor () -> Void)
@@ -135,7 +139,7 @@ struct NotchView: View {
             }
             if prompt == nil, let question {
                 QuestionCard(
-                    prompt: question, progress: questionProgress, accent: theme.accent,
+                    prompt: question, progress: questionProgress, result: questionResult, accent: theme.accent,
                     toggle: questionActions.toggle, setOther: questionActions.setOther, back: questionActions.back,
                     next: questionActions.next, handBack: questionActions.handBack, goToSession: questionActions.goToSession
                 )
@@ -149,7 +153,7 @@ struct NotchView: View {
                     .transition(.opacity)
             }
             if let prompt {
-                PermissionCard(prompt: prompt, pendingCount: pendingCount, accent: theme.accent, answer: answer)
+                PermissionCard(prompt: prompt, pendingCount: pendingCount, result: permissionResult, accent: theme.accent, answer: answer)
                     .id(prompt.id)
                     .padding(.top, metrics.notch.height)
                     .transition(.asymmetric(
@@ -801,6 +805,7 @@ extension TrackedPR.Bugbot {
 struct PermissionCard: View {
     let prompt: PermissionPrompt
     let pendingCount: Int
+    let result: PermissionResponse?
     let accent: LinearGradient
     let answer: @MainActor (UUID, PermissionResponse) -> Void
 
@@ -816,7 +821,7 @@ struct PermissionCard: View {
                     Text(prompt.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
-                    Text([prompt.note, prompt.project.isEmpty ? nil : prompt.project].compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "Claude is asking")
+                    Text([prompt.sessionName.isEmpty ? nil : "\(prompt.sessionName) asks", prompt.note].compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "Claude is asking")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(0.5))
                         .lineLimit(1)
@@ -853,26 +858,38 @@ struct PermissionCard: View {
             .padding(.vertical, 8)
             .frame(maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.08)))
-            HStack(spacing: 8) {
-                Spacer()
-                Button { answer(prompt.id, .deny) } label: {
-                    Text("Deny")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 96, height: 28)
-                        .background(Capsule().fill(Color.white.opacity(0.14)))
-                        .contentShape(Capsule())
+            if let result {
+                HStack(spacing: 6) {
+                    Spacer()
+                    Image(systemName: result == .allow ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    Text(result == .allow ? "Allowed" : "Denied")
                 }
-                .buttonStyle(.plain)
-                Button { answer(prompt.id, .allow) } label: {
-                    Text("Allow")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 96, height: 28)
-                        .background(Capsule().fill(accent))
-                        .contentShape(Capsule())
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(result == .allow ? AnyShapeStyle(accent) : AnyShapeStyle(Color.red))
+                .frame(height: 28)
+                .transition(.opacity)
+            } else {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button { answer(prompt.id, .deny) } label: {
+                        Text("Deny")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 96, height: 28)
+                            .background(Capsule().fill(Color.white.opacity(0.14)))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Button { answer(prompt.id, .allow) } label: {
+                        Text("Allow")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 96, height: 28)
+                            .background(Capsule().fill(accent))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 20)

@@ -57,11 +57,9 @@ final class HandsFreeController: ObservableObject {
         self.voice = voice
         listener.isSpeaking = { [weak voice] in voice?.isSpeaking ?? false }
         listener.onSkip = { [weak voice] all in voice?.skip(all: all) }
-        listener.answerQuestion = { [weak self, weak voice] text in
-            // While a question is read aloud through speakers, the mic would hear it; only answer then on headphones.
-            if voice?.isSpeaking == true, !WakeWordListener.outputIsHeadphones() { return false }
-            return self?.surface?.handleSpokenAnswer(text) ?? false
-        }
+        // The notch only accepts spoken answers once the card has been read out (and holds other replies meanwhile),
+        // so the mic never hears NotchVoice's own speech as an answer.
+        listener.answerQuestion = { [weak self] text in self?.surface?.handleSpokenAnswer(text) ?? false }
         // A reply starting or ending can change which mic should listen (see chosenMicrophone).
         speakingChanges = voice.$isSpeaking.removeDuplicates().dropFirst().sink { [weak self] _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.followUser() } }

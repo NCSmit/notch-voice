@@ -58,6 +58,15 @@ struct VoicePhraseTests {
         #expect(phrases.skipCommand("jarvis skip") == false)
     }
 
+    @Test func theAssistantIsNamedAfterTheWakePhrase() {
+        var phrases = VoicePhrases.defaults
+        #expect(phrases.assistantName == "Orchestrator")
+        phrases.wake = "hey computer"
+        #expect(phrases.assistantName == "Computer")
+        phrases.wake = "computer mainframe"
+        #expect(phrases.assistantName == "Computer Mainframe")
+    }
+
     @Test func emptyOrDuplicatePhrasesAreRejected() {
         var phrases = VoicePhrases.defaults
         #expect(phrases.problem == nil)

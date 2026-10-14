@@ -41,12 +41,20 @@ DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
 DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
 DICTATION_STALE_SECONDS = 15 * 60  # a flag this old was left behind by an app that quit mid-dictation
 DICTATION_MAX_WAIT = 270
+# Exists while a question or permission card is open in the notch: new replies wait until it's answered, and the
+# card's own read-out (NOTCHVOICE_CARD=1) goes next, as soon as the reply already speaking has finished.
+CARD_FILE = os.path.join(user_temp_dir(), "notchvoice_card_open")
+CARD_MAX_WAIT = 11 * 60
 # Replies take turns: one ticket per waiting reply, named so they sort oldest first.
 QUEUE_DIR = os.path.join(user_temp_dir(), "claude_tts_queue")
 QUEUE_MAX_WAIT = 20 * 60  # the Stop hook's timeout is set above this in install.sh
 # A reply that is just this marker means "nothing to say": the orchestrator ends quiet check-ins with it.
 SILENT_MARKER = "\u2014"
 # NotchVoice's speech player (Sources/NotchVoice/SpeechPlayer.swift).
+USE_APP_PLAYER = True
+# Render at the output's own rate (MacBook speakers and AirPods both run at 48 kHz), so the player doesn't have to
+# convert; converting from say's default 22 kHz audibly blurred the speech.
+RENDER_FORMAT = "LEF32@48000"
 PLAYER_SOCKET = os.path.join(user_temp_dir(), "notchvoice_player.sock")
 # Written by NotchVoice's "skip all": replies queued before this time (ns since 1970) stay silent.
 SKIP_MARKER = os.path.join(user_temp_dir(), "notchvoice_skip_before")
@@ -225,6 +233,32 @@ def user_is_dictating():
         return False
 
 
+def card_is_open():
+    try:
+        return time.time() - os.path.getmtime(CARD_FILE) < CARD_MAX_WAIT + 60
+    except OSError:
+        return False
+
+
+def wait_for_card_to_close():
+    deadline = time.time() + CARD_MAX_WAIT
+    while card_is_open() and time.time() < deadline:
+        time.sleep(0.3)
+
+
+def someone_is_speaking():
+    """A reply is playing right now (its hook wrote the owner file and is still alive)."""
+    for pid in read_owner()[:1]:
+        try:
+            os.kill(pid, 0)
+            return pid != os.getpid()
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+    return False
+
+
 def wait_for_dictation_to_end():
     """Never start talking over the user. Returns False if they are still dictating after a long wait."""
     deadline = time.time() + DICTATION_MAX_WAIT
@@ -285,12 +319,12 @@ def restore_music():
 
 def render(cmd, text):
     """Render the reply to an audio file with `say -o` (offline, much faster than real time), for NotchVoice to play."""
-    if not os.path.exists(PLAYER_SOCKET):
+    if not USE_APP_PLAYER or not os.path.exists(PLAYER_SOCKET):
         return None
-    fd, path = tempfile.mkstemp(prefix="notchvoice_reply_", suffix=".aiff", dir=user_temp_dir())
+    fd, path = tempfile.mkstemp(prefix="notchvoice_reply_", suffix=".caf", dir=user_temp_dir())
     os.close(fd)
     try:
-        subprocess.run(cmd + ["-o", path], input=text, text=True, check=True, timeout=120)
+        subprocess.run(cmd + ["--data-format=" + RENDER_FORMAT, "-o", path], input=text, text=True, check=True, timeout=120)
         return path if os.path.getsize(path) > 0 else None
     except (OSError, subprocess.SubprocessError):
         try:
@@ -304,22 +338,28 @@ def play_in_app(path, session_id):
     """Have NotchVoice play the file; it follows audio route changes (AirPods call mode) and pauses for dictation.
     Returns False if the app couldn't be reached, so the caller can fall back to `say`."""
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.connect(PLAYER_SOCKET)
-            connection.sendall((json.dumps({"path": path, "session_id": session_id or ""}) + "\n").encode())
-            reply = b""
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.connect(PLAYER_SOCKET)
+        connection.sendall((json.dumps({"path": path, "session_id": session_id or ""}) + "\n").encode())
+    except OSError:
+        return False  # not running: the caller speaks it with `say`
+    reply = b""
+    with connection:
+        try:
             while not reply.endswith(b"\n"):
                 chunk = connection.recv(4096)
                 if not chunk:
                     break
                 reply += chunk
-    except OSError:
-        return False
+        except OSError:
+            pass
     try:
         decision = json.loads(reply or b"{}").get("decision")
     except ValueError:
         decision = None
-    return decision in ("done", "stopped", "skipped")
+    # Only a reply the app couldn't play at all goes to `say`. If the app went away mid-reply (restart, quit),
+    # speaking it again from the start would repeat what the user already heard.
+    return decision != "error"
 
 
 def is_silent(raw):
@@ -348,10 +388,23 @@ def main():
     if rate:
         cmd += ["-r", str(rate)]
 
-    ticket = enqueue()
+    is_card = bool(os.environ.get("NOTCHVOICE_CARD"))
+    # A card's read-out skips the queue: replies waiting in it are held by the card anyway, so it only waits for the
+    # one already speaking. Everything else takes a ticket, and waits behind any open card.
+    ticket = None if is_card else enqueue()
     try:
-        if not wait_for_turn(ticket) or not wait_for_dictation_to_end() or skipped_by_user(ticket):
-            return
+        if is_card:
+            deadline = time.time() + QUEUE_MAX_WAIT
+            while someone_is_speaking() and time.time() < deadline:
+                time.sleep(0.2)
+            if not wait_for_dictation_to_end():
+                return
+        else:
+            if not wait_for_turn(ticket):
+                return
+            wait_for_card_to_close()
+            if not wait_for_dictation_to_end() or skipped_by_user(ticket):
+                return
         # Voice replies may have been switched off while this one waited.
         if os.path.exists(MUTE_FILE) and not os.environ.get("NOTCHVOICE_SAMPLE"):
             return
@@ -370,9 +423,10 @@ def main():
             except OSError:
                 pass
     finally:
-        leave_queue(ticket)
+        if ticket:
+            leave_queue(ticket)
         # The last reply in the queue brings the music back; one still waiting keeps it down.
-        if not others_waiting(ticket):
+        if not others_waiting(ticket or ""):
             restore_music()
             if is_owner():
                 try:

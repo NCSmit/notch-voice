@@ -94,12 +94,17 @@ final class VoiceController: ObservableObject {
         refresh()
     }
 
-    /// Read something aloud through the normal reply queue (respects mute and dictation), e.g. a question card.
-    func announce(_ text: String) {
-        guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return }
+    /// Read a question or permission card aloud: after the reply already speaking, ahead of replies still waiting
+    /// (those are held while a card is open). `finished` runs once it has been spoken, skipped or muted.
+    func announceCard(_ text: String, finished: @escaping @MainActor () -> Void) {
+        guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return finished() }
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/env")
         process.arguments = ["python3", hookScript.path]
+        process.environment = ProcessInfo.processInfo.environment.merging(["NOTCHVOICE_CARD": "1"]) { $1 }
+        process.terminationHandler = { _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { finished() } }
+        }
         let input = Pipe()
         process.standardInput = input
         do {
@@ -107,7 +112,8 @@ final class VoiceController: ObservableObject {
             input.fileHandleForWriting.write(payload)
             try input.fileHandleForWriting.close()
         } catch {
-            log.error("could not read the text aloud: \(error.localizedDescription)")
+            log.error("could not read the card aloud: \(error.localizedDescription)")
+            finished()
         }
     }
 

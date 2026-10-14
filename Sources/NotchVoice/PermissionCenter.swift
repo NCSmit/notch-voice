@@ -16,6 +16,8 @@ struct PermissionPrompt: Identifiable, Equatable {
     let symbol: String
     let project: String
     let note: String?
+    /// The asking session's name (its title in the desktop app, or its Claude Code name), else its project folder.
+    var sessionName: String = ""
 }
 
 @MainActor
@@ -30,7 +32,9 @@ final class PermissionCenter: ObservableObject {
             let toolName = request["tool_name"] as? String ?? "a tool"
             let input = request["tool_input"] as? [String: Any] ?? [:]
             let cwd = request["cwd"] as? String
-            let prompt = PermissionPrompt(id: connection.id, toolName: toolName, input: input, cwd: cwd)
+            var prompt = PermissionPrompt(id: connection.id, toolName: toolName, input: input, cwd: cwd)
+            let session = request["session_id"] as? String
+            prompt.sessionName = session.flatMap(SessionNavigator.name(of:)) ?? prompt.project
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.add(prompt, connection: connection) } }
         },
         onClose: { [weak self] connection in

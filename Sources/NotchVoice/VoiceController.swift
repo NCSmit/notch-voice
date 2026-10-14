@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import os
 
@@ -10,22 +11,41 @@ final class VoiceController: ObservableObject {
 
     @Published private(set) var isEnabled = true
     @Published private(set) var isSpeaking = false
+    @Published private(set) var speakingSession: String?
     @Published private(set) var voiceID: String?
     @Published private(set) var voiceName = "System Voice"
     @Published private(set) var systemVoiceLabel = "System Voice"
     @Published private(set) var speed = 1.0
     @Published private(set) var musicVolume = 0.5
     @Published private(set) var keepsRepliesShort = true
+    /// Only the session that ran /orchestrator speaks; it reports on the others.
+    @Published private(set) var isOrchestratorMode = false
 
     // The contract of ~/.claude/hooks/speak.py: it stays silent while the mute file exists, takes its voice, rate
     // and music level from the settings file, and writes "<hook pid> <say pid>" to the owner file while it speaks.
     private let muteFile = URL.homeDirectory.appending(path: ".claude/tts_off")
     private let settingsFile = URL.homeDirectory.appending(path: ".claude/tts_settings.json")
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
+    // The session_id of the reply being spoken, written by the hook next to the owner file.
+    private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
+    // "Skip all": replies queued before this time (nanoseconds since 1970) are not spoken.
+    private let skipMarker = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice_skip_before")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
     private var sample: Process?
+    private var isDictating = false
+    private var pausedSay: pid_t?
+    private var playerChanges: AnyCancellable?
+    /// Replies normally play here; a `say` process only plays them when NotchVoice wasn't reachable.
+    private(set) var player: SpeechPlayer?
+
+    func attach(_ player: SpeechPlayer) {
+        self.player = player
+        playerChanges = player.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
+        }
+    }
 
     init() {
         loadSettings()
@@ -38,8 +58,63 @@ final class VoiceController: ObservableObject {
             try? FileManager.default.removeItem(at: muteFile)
         } else {
             FileManager.default.createFile(atPath: muteFile.path, contents: nil)
+            player?.stop()
         }
         refresh()
+    }
+
+    /// Skip the rest of the reply being spoken. With `all`, replies already waiting in the queue are dropped too:
+    /// speak.py skips any reply whose queue ticket is older than the marker written here.
+    func skip(all: Bool = false) {
+        if all {
+            let nanoseconds = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
+            try? String(nanoseconds).write(to: skipMarker, atomically: true, encoding: .utf8)
+        }
+        player?.skip()
+        // A reply played by a plain `say` process (NotchVoice wasn't reachable when it started).
+        if let sayPid = ownerPids().dropFirst().first, Self.processName(sayPid) == "say" {
+            kill(sayPid, SIGTERM)
+            kill(sayPid, SIGCONT)
+            if pausedSay == sayPid { pausedSay = nil }
+        }
+        log.info("skipped \(all ? "all replies" : "the current reply", privacy: .public)")
+        refresh()
+    }
+
+    /// Never talk over the user: a reply already speaking is paused (SIGSTOP) while they dictate and picks up
+    /// where it left off afterwards. Replies that haven't started yet wait in speak.py for the dictation flag file.
+    func setDictating(_ dictating: Bool) {
+        isDictating = dictating
+        if dictating { player?.pause() } else { player?.resume() }
+        if !dictating, let pid = pausedSay {
+            kill(pid, SIGCONT)
+            pausedSay = nil
+            log.info("resumed say \(pid) after dictation")
+        }
+        refresh()
+    }
+
+    /// Read a question or permission card aloud: after the reply already speaking, ahead of replies still waiting
+    /// (those are held while a card is open). `finished` runs once it has been spoken, skipped or muted.
+    func announceCard(_ text: String, finished: @escaping @MainActor () -> Void) {
+        guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return finished() }
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/env")
+        process.arguments = ["python3", hookScript.path]
+        process.environment = ProcessInfo.processInfo.environment.merging(["NOTCHVOICE_CARD": "1"]) { $1 }
+        process.terminationHandler = { _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { finished() } }
+        }
+        let input = Pipe()
+        process.standardInput = input
+        do {
+            try process.run()
+            input.fileHandleForWriting.write(payload)
+            try input.fileHandleForWriting.close()
+        } catch {
+            log.error("could not read the card aloud: \(error.localizedDescription)")
+            finished()
+        }
     }
 
     func setVoice(_ id: String?) {
@@ -64,6 +139,11 @@ final class VoiceController: ObservableObject {
         saveSettings()
     }
 
+    func setOrchestratorMode(_ enabled: Bool) {
+        isOrchestratorMode = enabled
+        saveSettings()
+    }
+
     func loadSettings() {
         let settings = (try? Data(contentsOf: settingsFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
@@ -74,6 +154,7 @@ final class VoiceController: ObservableObject {
         speed = (settings["rate"] as? Double).map { ($0 / Self.baseRate * 10).rounded() / 10 } ?? 1
         musicVolume = settings["duck"] as? Double ?? 0.5
         keepsRepliesShort = settings["brief"] as? Bool ?? true
+        isOrchestratorMode = settings["orchestrator"] as? Bool ?? false
     }
 
     func playSample() {
@@ -103,20 +184,32 @@ final class VoiceController: ObservableObject {
         let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
         if let sayPid, !enabled, !isSample {
             // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
+            // A paused `say` only acts on SIGTERM once it is continued.
             kill(sayPid, SIGTERM)
+            kill(sayPid, SIGCONT)
+            if pausedSay == sayPid { pausedSay = nil }
             log.info("stopped say \(sayPid) because voice replies are off")
+        } else if let sayPid, isDictating, pausedSay != sayPid, !isSample {
+            kill(sayPid, SIGSTOP)
+            pausedSay = sayPid
+            log.info("paused say \(sayPid) while the user dictates")
         }
         if isEnabled != enabled { isEnabled = enabled }
-        let speaking = sayPid != nil && (enabled || isSample)
+        let playerSpeaking = player.map { $0.isSpeaking && !$0.isPaused } ?? false
+        let speaking = (sayPid != nil && (enabled || isSample) && pausedSay != sayPid) || playerSpeaking
         if isSpeaking != speaking {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")
         }
+        let session = !speaking ? nil
+            : playerSpeaking ? player?.session
+            : (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if speakingSession != session { speakingSession = session }
         setPolling(pids.contains { Self.isAlive($0) })
     }
 
     private func saveSettings() {
-        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort]
+        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort, "orchestrator": isOrchestratorMode]
         if let voiceID { settings["voice"] = voiceID }
         if abs(speed - 1) > 0.01 { settings["rate"] = Int((Self.baseRate * speed).rounded()) }
         guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) else { return }

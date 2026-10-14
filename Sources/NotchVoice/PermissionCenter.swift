@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "local.notchvoice", category: "permissions")
 
 enum PermissionResponse: String {
     case allow
@@ -13,6 +16,8 @@ struct PermissionPrompt: Identifiable, Equatable {
     let symbol: String
     let project: String
     let note: String?
+    /// The asking session's name (its title in the desktop app, or its Claude Code name), else its project folder.
+    var sessionName: String = ""
 }
 
 @MainActor
@@ -27,7 +32,9 @@ final class PermissionCenter: ObservableObject {
             let toolName = request["tool_name"] as? String ?? "a tool"
             let input = request["tool_input"] as? [String: Any] ?? [:]
             let cwd = request["cwd"] as? String
-            let prompt = PermissionPrompt(id: connection.id, toolName: toolName, input: input, cwd: cwd)
+            var prompt = PermissionPrompt(id: connection.id, toolName: toolName, input: input, cwd: cwd)
+            let session = request["session_id"] as? String
+            prompt.sessionName = session.flatMap(SessionNavigator.name(of:)) ?? prompt.project
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.add(prompt, connection: connection) } }
         },
         onClose: { [weak self] connection in
@@ -42,6 +49,7 @@ final class PermissionCenter: ObservableObject {
     }
 
     func answer(_ id: UUID, _ response: PermissionResponse) {
+        log.info("answered in the notch: \(response.rawValue, privacy: .public)")
         connections[id]?.reply(response.rawValue)
         remove(id)
     }
@@ -53,12 +61,17 @@ final class PermissionCenter: ObservableObject {
     }
 
     private func add(_ prompt: PermissionPrompt, connection: PermissionConnection) {
-        guard isEnabled() else { return connection.reply(PermissionResponse.dismiss.rawValue) }
+        guard isEnabled() else {
+            log.info("request handed back: permission cards are off")
+            return connection.reply(PermissionResponse.dismiss.rawValue)
+        }
         connections[prompt.id] = connection
         queue.append(prompt)
+        log.info("showing a request: \(prompt.title, privacy: .public) in \(prompt.project, privacy: .public)")
     }
 
     private func remove(_ id: UUID) {
+        if connections[id] != nil { log.info("request withdrawn (answered in Claude or the hook ended)") }
         connections[id] = nil
         queue.removeAll { $0.id == id }
     }

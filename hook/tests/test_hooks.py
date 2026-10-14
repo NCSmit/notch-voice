@@ -445,3 +445,48 @@ class HandoffTests(unittest.TestCase):
 
     def test_a_normal_start_adds_nothing(self):
         self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")
+
+
+_spec = importlib.util.spec_from_file_location("snapshot", HOOKS.parent / "orchestrator" / "snapshot.py")
+snapshot = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(snapshot)
+
+
+class TrackerTests(unittest.TestCase):
+    def test_bugbot_is_read_apart_from_the_rest_of_ci(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "Cursor Bugbot", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+        ]
+        self.assertEqual(snapshot.check_summary(rollup), ("passing", "findings"))
+        rollup[1] = {"name": "Cursor Bugbot", "status": "IN_PROGRESS", "conclusion": ""}
+        self.assertEqual(snapshot.check_summary(rollup)[1], "running")
+        self.assertEqual(snapshot.check_summary([{"name": "Cursor Bugbot", "status": "COMPLETED", "conclusion": "SUCCESS"}]), ("none", "clean"))
+
+    def test_one_failing_check_fails_ci_and_a_running_one_keeps_it_pending(self):
+        self.assertEqual(snapshot.check_summary([{"name": "a", "status": "COMPLETED", "conclusion": "FAILURE"},
+                                                 {"name": "b", "status": "QUEUED"}])[0], "failing")
+        self.assertEqual(snapshot.check_summary([{"context": "vercel", "state": "PENDING"}])[0], "pending")
+        self.assertEqual(snapshot.check_summary([]), ("none", "missing"))
+
+    def test_the_session_that_created_a_pr_owns_it(self):
+        claims = {}
+        key = ("me/repo", 7)
+        snapshot.claim_pr(claims, key, "mentioner", 1)
+        snapshot.claim_pr(claims, key, "on-branch", 2)
+        snapshot.claim_pr(claims, key, "creator", 3)
+        snapshot.claim_pr(claims, key, "late-mention", 1)
+        self.assertEqual(claims[key][0], "creator")
+
+    def test_finds_prs_a_session_created_or_mentioned(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "t.jsonl")
+            entries = [
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "1", "name": "Bash", "input": {"command": "gh pr create --fill"}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "1", "content": "https://github.com/me/repo/pull/12"}]}},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "2", "name": "Bash", "input": {"command": "gh pr list"}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "2", "content": "see https://github.com/other/thing/pull/3"}]}},
+            ]
+            with open(path, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in entries))
+            self.assertEqual(snapshot.transcript_prs(path), {("me/repo", 12): "created", ("other/thing", 3): "mentioned"})

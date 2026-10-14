@@ -44,3 +44,23 @@ struct SessionTests {
         #expect(list.map(\.id) == ["waiting-100.0", "working-10.0", "working-50.0", "idle-1.0"])
     }
 }
+
+struct TrackedPRTests {
+    @Test func readsAPullRequestFromTheTrackerFile() throws {
+        let pr = try #require(TrackedPR(json: [
+            "repo": "me/notch-voice", "number": 12, "title": "Add tracker", "url": "https://github.com/me/notch-voice/pull/12",
+            "state": "OPEN", "ci": "failing", "bugbot": "clean", "session_id": "abc", "session_name": "Notch work",
+        ]))
+        #expect(pr.repoName == "notch-voice")
+        #expect(pr.ci == .failing)
+        #expect(pr.bugbot == .clean)
+        #expect(!pr.isMerged)
+    }
+
+    @Test func unknownCheckValuesFallBackToNothingKnown() throws {
+        let pr = try #require(TrackedPR(json: ["repo": "a/b", "number": 1, "state": "MERGED", "ci": "weird"]))
+        #expect(pr.isMerged)
+        #expect(pr.ci == .none)
+        #expect(pr.bugbot == .missing)
+    }
+}

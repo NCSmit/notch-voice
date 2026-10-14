@@ -20,7 +20,7 @@ struct ClaudeSession: Identifiable, Equatable {
     static let idleLifetime: TimeInterval = 15 * 60
     static let workingLifetime: TimeInterval = 2 * 60 * 60
 
-    init?(id: String, json: [String: Any], now: Date) {
+    init?(id: String, json: [String: Any], now: Date, name: String? = nil) {
         guard let rawState = json["state"] as? String, let state = State(rawValue: rawState),
               let seconds = json["updated"] as? Double else { return nil }
         let updated = Date(timeIntervalSince1970: seconds)
@@ -29,7 +29,9 @@ struct ClaudeSession: Identifiable, Equatable {
         let project = json["project"] as? String ?? ""
         self.id = id
         self.project = project
-        self.title = (json["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (project.isEmpty ? "Claude Code" : project)
+        self.title = name.flatMap { $0.isEmpty ? nil : $0 }
+            ?? (json["title"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? (project.isEmpty ? "Claude Code" : project)
         self.activity = json["activity"] as? String ?? ""
         self.state = state
         self.updated = updated
@@ -74,11 +76,13 @@ final class SessionStore: ObservableObject {
     func reload() {
         let now = Date()
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.directory, includingPropertiesForKeys: nil)) ?? []
+        let names = Self.sessionNames()
         var found: [ClaudeSession] = []
         for file in files where file.pathExtension == "json" {
             guard let data = try? Data(contentsOf: file),
                   let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
-            if let session = ClaudeSession(id: file.deletingPathExtension().lastPathComponent, json: json, now: now) {
+            let id = file.deletingPathExtension().lastPathComponent
+            if let session = ClaudeSession(id: id, json: json, now: now, name: names[id]) {
                 found.append(session)
             } else if let seconds = json["updated"] as? Double, now.timeIntervalSince1970 - seconds > Self.pruneAge {
                 try? FileManager.default.removeItem(at: file)
@@ -93,6 +97,21 @@ final class SessionStore: ObservableObject {
             sessions = shown
             log.info("sessions: \(shown.count)")
         }
+    }
+
+    /// Session names from Claude Code's own map of running sessions (~/.claude/sessions/<pid>.json), the same names
+    /// the desktop app and SendMessage use.
+    private static func sessionNames() -> [String: String] {
+        let directory = URL.homeDirectory.appending(path: ".claude/sessions")
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        var names: [String: String] = [:]
+        for file in files where file.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: file),
+                  let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let id = json["sessionId"] as? String, let name = json["name"] as? String else { continue }
+            names[id] = name
+        }
+        return names
     }
 
     private func watch(_ directory: URL) {

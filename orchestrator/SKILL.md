@@ -56,7 +56,13 @@ Run these in parallel:
    - Match them to snapshot records by title, project folder and timing.
    - Read more of a session with `mcp__ccd_session_mgmt__list_events` when one is available, or by reading the
      transcript tail at the record's `transcript_path`.
-3. **`~/.claude/orchestrator/notes.md`**. These are your notes: environment, open threads, relays sent.
+3. **`~/.claude/notchvoice/tracker.json`**, the overview the notch shows in its two tabs. It covers every live
+   session (name, desktop or terminal, state, its PRs) and every open or recently merged PR of the user's. Each PR
+   has its owning session, CI result and Cursor Bugbot status on the current head commit.
+   - The notch refreshes it when a session changes state and every two minutes.
+   - If `updated` is more than five minutes old, or you need it fresh right now, run `snapshot tracker --write`.
+   - Bugbot `missing` means it hasn't reviewed the current head yet. That is not a pass.
+4. **`~/.claude/orchestrator/notes.md`**. These are your notes: environment, open threads, relays sent.
 
 ## 3. Briefing (spoken)
 
@@ -67,11 +73,14 @@ Run these in parallel:
    - **working**
    - **done**: group these in one sentence
    Say what each session is, where it got to and your recommended next move.
-3. **At most two cross-session observations**, for example:
+3. **PRs, from the tracker,** folded into each session's sentence. For example: "the quote fix PR is green on CI
+   but Bugbot hasn't reviewed the latest commit", or "merged an hour ago". If a session calls a PR done while Bugbot
+   is missing, running or showing findings on the head commit, say so.
+4. **At most two cross-session observations**, for example:
    - two sessions editing the same repo
    - duplicated work
    - one session's finding that another needs
-4. **Stop.** Offer detail rather than giving it unasked.
+5. **Stop.** Offer detail rather than giving it unasked.
 
 Base advice on the transcript: what the user asked for versus where the session actually is, any question the
 session asked that is still unanswered, and the obvious next step. Judge it the way the user would, as someone who

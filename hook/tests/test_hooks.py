@@ -497,18 +497,15 @@ class DictationWaitTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.flag = os.path.join(self.dir.name, "notchvoice_dictating")
-        for name, value in (("DICTATION_FILE", self.flag), ("OWNER_FILE", os.path.join(self.dir.name, "owner"))):
-            patcher = mock.patch.object(speak, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(speak, "DICTATION_FILE", self.flag)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_speaks_straight_away_when_nobody_is_dictating(self):
-        speak.take_over()
         self.assertTrue(speak.wait_for_dictation_to_end())
 
     def test_waits_until_dictation_ends(self):
         open(self.flag, "w").close()
-        speak.take_over()
         threading.Timer(0.5, os.remove, [self.flag]).start()
         started = time.time()
         self.assertTrue(speak.wait_for_dictation_to_end())
@@ -520,8 +517,43 @@ class DictationWaitTests(unittest.TestCase):
         os.utime(self.flag, (old, old))
         self.assertFalse(speak.user_is_dictating())
 
-    def test_gives_up_quietly_when_a_newer_reply_takes_over(self):
-        open(self.flag, "w").close()
-        speak.take_over()
-        threading.Timer(0.3, speak.write_owner, [999999]).start()
-        self.assertFalse(speak.wait_for_dictation_to_end())
+
+class QueueTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patcher = mock.patch.object(speak, "QUEUE_DIR", self.dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def ticket(self, ns, pid):
+        path = os.path.join(self.dir.name, f"{ns:020d}-{pid}")
+        open(path, "w").close()
+        return path
+
+    def test_a_new_reply_waits_behind_the_one_speaking(self):
+        first = self.ticket(1, os.getpid())
+        second = self.ticket(2, os.getpid())
+        self.assertEqual(speak.queue_ahead_of(first), [])
+        self.assertEqual(speak.queue_ahead_of(second), [os.path.basename(first)])
+        threading.Timer(0.4, speak.leave_queue, [first]).start()
+        self.assertTrue(speak.wait_for_turn(second))
+
+    def test_a_ticket_left_by_a_dead_hook_is_cleared(self):
+        dead = self.ticket(1, 999999)
+        mine = self.ticket(2, os.getpid())
+        self.assertEqual(speak.queue_ahead_of(mine), [])
+        self.assertFalse(os.path.exists(dead))
+
+    def test_the_last_reply_knows_nobody_else_is_waiting(self):
+        mine = speak.enqueue()
+        self.assertFalse(speak.others_waiting(mine))
+        other = self.ticket(time.time_ns() + 1, os.getpid())
+        self.assertTrue(speak.others_waiting(mine))
+        speak.leave_queue(other)
+
+    def test_an_em_dash_or_nothing_means_stay_quiet(self):
+        self.assertTrue(speak.is_silent("\u2014"))
+        self.assertTrue(speak.is_silent("  \u2014\n"))
+        self.assertTrue(speak.is_silent(""))
+        self.assertFalse(speak.is_silent("\u2014 nothing new, all sessions idle"))

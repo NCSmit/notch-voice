@@ -41,6 +41,7 @@ final class WakeWordListener {
     private var heartbeat: Timer?
     private var unavailableNote: String?
     private var recentFailures: [Date] = []
+    private var pendingWake: DispatchWorkItem?
     private var startedAt = Date.distantPast
     private var restartWork: DispatchWorkItem?
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -201,6 +202,8 @@ final class WakeWordListener {
 
     /// Switch to listening for the end of a dictated message.
     func beginCapture() {
+        pendingWake?.cancel()
+        pendingWake = nil
         mode = .capture
         captureStart = Date()
         lastWordAt = nil
@@ -227,7 +230,7 @@ final class WakeWordListener {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
-        request.contextualStrings = ["Hey orchestrator", "orchestrator", "send it", "cancel that", "skip", "skip all"]
+        request.contextualStrings = VoicePhrases.current.recognizerHints
         feed.set(request)
         task = recognizer?.recognitionTask(with: request) { [weak self] result, error in
             let nsError = error.map { $0 as NSError }
@@ -277,19 +280,37 @@ final class WakeWordListener {
 
     private func heard(_ text: String) {
         lastHeard = text
-        if mode == .capture || Self.normalized(text).contains("orches") || Self.normalized(text).hasSuffix("send it") {
+        if mode == .capture || Self.containsWakeWord(text) || Self.normalized(text).contains("orches") {
             log.info("heard: \(text, privacy: .public)")
         }
         heardCount += 1
         switch mode {
         case .wake:
             if isSpeaking(), let all = Self.skipCommand(text) {
+                pendingWake?.cancel()
+                pendingWake = nil
                 log.info("spoken skip\(all ? " all" : "", privacy: .public)")
                 onSkip(all)
                 startRequest()  // clear the phrase so it isn't acted on twice
             } else if Self.containsWakeWord(text) {
-                log.info("wake word heard")
-                onWake()
+                if isSpeaking() {
+                    // "Hey orchestrator" arrives a moment before a following "skip", so while a reply plays, give
+                    // it a second to become "hey orchestrator, skip" before starting a dictation.
+                    guard pendingWake == nil else { return }
+                    let work = DispatchWorkItem { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self, self.pendingWake != nil, self.mode == .wake else { return }
+                            self.pendingWake = nil
+                            log.info("wake word heard")
+                            self.onWake()
+                        }
+                    }
+                    pendingWake = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.1, execute: work)
+                } else {
+                    log.info("wake word heard")
+                    onWake()
+                }
             }
         case .capture:
             if text != heard {
@@ -355,41 +376,12 @@ final class WakeWordListener {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    nonisolated static func containsWakeWord(_ text: String) -> Bool {
-        let words = normalized(text)
-        // "Hey orchestrator" anywhere, or, because Apple's recognizer often drops the "hey" at the start of a phrase,
-        // the word on its own as a whole phrase ("Orchestra"). A mention mid-sentence doesn't count.
-        return words.range(of: "\\b(hey|hi|hay|a|okay|ok) orchestra(tor|ter|te)?s?\\b", options: .regularExpression) != nil
-            || words.range(of: "^((hey|hi|hay|a|okay|ok) )?orchestra(tor|ter|te)?s?$", options: .regularExpression) != nil
-    }
-
-    /// A spoken skip: the whole phrase, so NotchVoice's own speech (which never is just "skip") and normal talk don't
-    /// trigger it. nil = not a skip; true = skip all.
-    nonisolated static func skipCommand(_ text: String) -> Bool? {
-        let words = normalized(text)
-        if words.range(of: "^((hey )?orchestra(tor)?s? )?(skip|stop) (all|everything)$", options: .regularExpression) != nil { return true }
-        if words.range(of: "^((hey )?orchestra(tor)?s? )?(skip|skip it|skip that|next)$", options: .regularExpression) != nil { return false }
-        return nil
-    }
-
-    /// "Cancel that" at the end throws the message away. ("Scratch that" is Wispr Flow's own undo command.)
-    nonisolated static func endsWithAbortWord(_ text: String) -> Bool {
-        normalized(text).range(of: "\\bcancel that$", options: .regularExpression) != nil
-    }
-
-    nonisolated static func endsWithStopWord(_ text: String) -> Bool {
-        normalized(text).range(of: "\\bsend it$", options: .regularExpression) != nil
-    }
-
-    /// The dictated message without the stop phrase, e.g. "…that's it for now, send it." → "…that's it for now".
-    nonisolated static func strippingStopPhrase(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pattern = "[\\s,;:.!-]*\\bsend it[\\s.!]*$"
-        while let range = result.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
-            result.removeSubrange(range)
-        }
-        return result.trimmingCharacters(in: CharacterSet(charactersIn: " ,;:-").union(.whitespacesAndNewlines))
-    }
+    // The phrases come from Settings (VoicePhrases.current); these keep the call sites short.
+    nonisolated static func containsWakeWord(_ text: String) -> Bool { VoicePhrases.current.isWake(text) }
+    nonisolated static func skipCommand(_ text: String) -> Bool? { VoicePhrases.current.skipCommand(text) }
+    nonisolated static func endsWithAbortWord(_ text: String) -> Bool { VoicePhrases.current.endsWithCancel(text) }
+    nonisolated static func endsWithStopWord(_ text: String) -> Bool { VoicePhrases.current.endsWithSend(text) }
+    nonisolated static func strippingStopPhrase(_ text: String) -> String { VoicePhrases.current.strippingSend(text) }
 }
 
 /// Hands audio buffers from the realtime tap to whichever recognition request is current.

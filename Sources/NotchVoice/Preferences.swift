@@ -11,6 +11,8 @@ final class Preferences: ObservableObject {
     private static let wakeWordKey = "listensForWakeWord"
     private static let headphonesKey = "listensThroughHeadphones"
     private static let musicRuleKey = "skipsHeadphonesDuringMusic"
+    private static let phrasesKey = "voicePhrases"
+    private static let awayDelayKey = "awayDelaySeconds"
 
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
@@ -28,6 +30,11 @@ final class Preferences: ObservableObject {
     @Published private(set) var listensThroughHeadphones: Bool
     /// …but not while Spotify or Apple Music is playing, so music keeps full quality.
     @Published private(set) var skipsHeadphonesDuringMusic: Bool
+    /// The spoken commands; changes apply to the next thing heard.
+    @Published private(set) var phrases: VoicePhrases
+    /// How long without keyboard or mouse use counts as away (then the AirPods mic takes over).
+    @Published private(set) var awayDelay: TimeInterval
+    static let awayDelayRange: ClosedRange<TimeInterval> = 30...900
     private let muteHotkey: Hotkey
 
     init(muteHotkey: Hotkey) {
@@ -38,6 +45,12 @@ final class Preferences: ObservableObject {
         listensForWakeWord = UserDefaults.standard.bool(forKey: Self.wakeWordKey)
         listensThroughHeadphones = UserDefaults.standard.bool(forKey: Self.headphonesKey)
         skipsHeadphonesDuringMusic = UserDefaults.standard.object(forKey: Self.musicRuleKey) as? Bool ?? true
+        let savedPhrases = UserDefaults.standard.data(forKey: Self.phrasesKey).flatMap { try? JSONDecoder().decode(VoicePhrases.self, from: $0) }
+        let usable = savedPhrases.flatMap { $0.problem == nil ? $0 : nil } ?? .defaults
+        phrases = usable
+        VoicePhrases.current = usable
+        let delay = UserDefaults.standard.object(forKey: Self.awayDelayKey) as? Double ?? 120
+        awayDelay = min(max(delay, Self.awayDelayRange.lowerBound), Self.awayDelayRange.upperBound)
         self.muteHotkey = muteHotkey
         muteShortcut = Self.savedMuteShortcut.flatMap { muteHotkey.register($0) ? $0 : nil }
     }
@@ -60,6 +73,20 @@ final class Preferences: ObservableObject {
     func setListensForWakeWord(_ enabled: Bool) {
         listensForWakeWord = enabled
         UserDefaults.standard.set(enabled, forKey: Self.wakeWordKey)
+    }
+
+    /// Saves the phrases if they're usable; otherwise returns what's wrong and keeps the old ones.
+    func setPhrases(_ new: VoicePhrases) -> String? {
+        if let problem = new.problem { return problem }
+        phrases = new
+        VoicePhrases.current = new
+        UserDefaults.standard.set(try? JSONEncoder().encode(new), forKey: Self.phrasesKey)
+        return nil
+    }
+
+    func setAwayDelay(_ seconds: TimeInterval) {
+        awayDelay = min(max(seconds, Self.awayDelayRange.lowerBound), Self.awayDelayRange.upperBound)
+        UserDefaults.standard.set(awayDelay, forKey: Self.awayDelayKey)
     }
 
     func setListensThroughHeadphones(_ enabled: Bool) {

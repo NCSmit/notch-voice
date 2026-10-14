@@ -42,3 +42,28 @@ struct WakeWordTests {
         #expect(WakeWordListener.strippingStopPhrase("send it to Bugbot first") == "send it to Bugbot first")
     }
 }
+
+struct VoicePhraseTests {
+    @Test func customPhrasesAreHeard() {
+        var phrases = VoicePhrases.defaults
+        phrases.wake = "hey jarvis"
+        phrases.send = "over and out"
+        phrases.cancel = "never mind"
+        #expect(phrases.isWake("hey Jarvis"))
+        #expect(phrases.isWake("Jarvis"))  // the recognizer dropped the "hey"
+        #expect(!phrases.isWake("ask jarvis about it later"))
+        #expect(phrases.endsWithSend("ship it. Over and out."))
+        #expect(phrases.strippingSend("ship it. Over and out.") == "ship it")
+        #expect(phrases.endsWithCancel("oh never mind"))
+        #expect(phrases.skipCommand("jarvis skip") == false)
+    }
+
+    @Test func emptyOrDuplicatePhrasesAreRejected() {
+        var phrases = VoicePhrases.defaults
+        #expect(phrases.problem == nil)
+        phrases.send = "  "
+        #expect(phrases.problem == "Send phrase can't be empty.")
+        phrases.send = "Cancel that!"
+        #expect(phrases.problem == "Send and cancel phrases are the same.")
+    }
+}

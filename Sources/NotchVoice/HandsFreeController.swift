@@ -33,8 +33,8 @@ final class HandsFreeController: ObservableObject {
     private let preferences: Preferences
     private var micTimer: Timer?
     private var headphoneChanges: AnyCancellable?
-    /// Away = no keyboard, mouse or trackpad use for this long.
-    private static let awayAfter: TimeInterval = 120
+    private var speakingChanges: AnyCancellable?
+    private weak var voice: VoiceController?
 
     private let listener = WakeWordListener()
     private let dictation: DictationMonitor
@@ -52,8 +52,13 @@ final class HandsFreeController: ObservableObject {
     init(dictation: DictationMonitor, preferences: Preferences, voice: VoiceController) {
         self.dictation = dictation
         self.preferences = preferences
+        self.voice = voice
         listener.isSpeaking = { [weak voice] in voice?.isSpeaking ?? false }
         listener.onSkip = { [weak voice] all in voice?.skip(all: all) }
+        // A reply starting or ending can change which mic should listen (see chosenMicrophone).
+        speakingChanges = voice.$isSpeaking.removeDuplicates().dropFirst().sink { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.followUser() } }
+        }
         listener.onWake = { [weak self] in self?.wake() }
         listener.onStop = { [weak self] reason, heard in self?.captureEnded(reason, heard: heard) }
         listener.onUnavailable = { [weak self] reason in self?.listenerStopped(reason) }
@@ -123,7 +128,10 @@ final class HandsFreeController: ObservableObject {
     private func chosenMicrophone() -> AVCaptureDevice? {
         let builtIn = WakeWordListener.nonBluetoothMicrophone()
         guard preferences.listensThroughHeadphones, let headphones = WakeWordListener.headphoneMicrophone() else { return builtIn }
-        let away = Self.secondsSinceInput() > Self.awayAfter
+        // While a reply plays, listen where the user is listening, so "skip" can be said quietly into the headset.
+        // Music is turned down during replies anyway.
+        if voice?.isSpeaking == true { return headphones }
+        let away = Self.secondsSinceInput() > preferences.awayDelay
         let musicBlocks = preferences.skipsHeadphonesDuringMusic && DictationMonitor.musicIsPlaying()
         if builtIn == nil { return musicBlocks ? nil : headphones }  // lid closed: AirPods are the only mic
         return away && !musicBlocks ? headphones : builtIn
@@ -176,7 +184,8 @@ final class HandsFreeController: ObservableObject {
         dictation.hold(true)  // pauses or holds back any reply until the message is sent
         phase = .capturing
         Sound.play(.start)
-        surface?.showCapture(status: "Listening \u{2014} \u{201C}send it\u{201D} sends, \u{201C}cancel that\u{201D} throws it away", text: nil)
+        let phrases = preferences.phrases
+        surface?.showCapture(status: "Listening \u{2014} \u{201C}\(phrases.send)\u{201D} sends, \u{201C}\(phrases.cancel)\u{201D} cancels", text: nil)
         listener.beginCapture()
         openQuietly(Self.startWispr)
         log.info("capturing; front app was \(self.previousApp?.localizedName ?? "none", privacy: .public)")
@@ -198,7 +207,7 @@ final class HandsFreeController: ObservableObject {
         }
         if reason == .aborted {
             Sound.play(.cancelled)
-            cancel(reason: "user said cancel that")
+            cancel(reason: "user said the cancel phrase")
             return
         }
         phase = .sending

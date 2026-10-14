@@ -422,7 +422,7 @@ struct VoicePanel: View {
 
     private var status: String {
         if case .failed(let reason) = handsFree { return "Hands-free: " + reason }
-        if handsFree == .capturing { return "Listening to you… say \u{201C}send it\u{201D}" }
+        if handsFree == .capturing { return "Listening to you\u{2026} say \u{201C}\(VoicePhrases.current.send)\u{201D}" }
         if isSpeaking { return "Speaking…" }
         guard isEnabled else { return "Off" }
         guard isOrchestratorMode else { return "Replies are read aloud" }

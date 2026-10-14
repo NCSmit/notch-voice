@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissionSetting: AnyCancellable?
     private var dictation: DictationMonitor?
     private var dictationChanges: AnyCancellable?
+    private var handsFree: HandsFreeController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -46,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notch?.flash()
         }
         let preferences = Preferences(muteHotkey: muteHotkey)
+        handsFree = HandsFreeController(dictation: dictation, preferences: preferences)
         let permissions = PermissionCenter()
         permissions.isEnabled = { preferences.asksForPermission }
         permissionSetting = preferences.$asksForPermission.dropFirst().filter { !$0 }.sink { _ in

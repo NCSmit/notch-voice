@@ -20,6 +20,12 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>NotchVoice listens for "Hey orchestrator" on this Mac, so you can talk to your orchestrator session hands-free.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>NotchVoice recognises its wake word and stop word on this Mac. Audio never leaves your Mac for this.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>NotchVoice types your dictated message into the Terminal tab where your orchestrator session runs.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

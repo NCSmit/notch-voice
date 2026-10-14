@@ -13,6 +13,9 @@ struct NotchMetrics: Equatable {
     static let glowMargin: CGFloat = 60
 
     var closedSize: CGSize { CGSize(width: notch.width + 2 * Self.closedTopRadius, height: notch.height) }
+    static let indicatorWidth: CGFloat = 26
+    /// The closed notch grows a little to the right to show the hands-free indicator.
+    var closedSizeWithIndicator: CGSize { CGSize(width: closedSize.width + 2 * Self.indicatorWidth, height: notch.height) }
     static let voiceRowHeight: CGFloat = 58
     static let sessionRowHeight: CGFloat = 38
     static let sessionListPadding: CGFloat = 12
@@ -58,6 +61,7 @@ final class NotchState: ObservableObject {
     @Published var sessions: [ClaudeSession] = []
     @Published var orchestratorID: String?
     @Published var prs: [TrackedPR] = []
+    @Published var handsFree = HandsFreeController.Phase.off
     @Published var tab: NotchTab = .sessions
 
     var hasTabs: Bool { !prs.isEmpty }
@@ -85,12 +89,13 @@ final class NotchController {
     private var sessionChanges: AnyCancellable?
     private var orchestratorChanges: AnyCancellable?
     private var prChanges: AnyCancellable?
+    private var handsFreeChanges: AnyCancellable?
     private var glowPreview = 0
     private let preferences: Preferences
     private var reopenAfterPrompt = false
     private var pinChanges: AnyCancellable?
 
-    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, openSettings: @escaping @MainActor () -> Void) {
+    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, handsFree: HandsFreeController, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
         self.preferences = preferences
         let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings)
@@ -111,6 +116,11 @@ final class NotchController {
         }
         permissionChanges = permissions.$queue.sink { [weak self] queue in
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
+        }
+        handsFreeChanges = handsFree.$phase.sink { [weak self] phase in
+            MainActor.assumeIsolated {
+                withAnimation(.easeInOut(duration: 0.25)) { self?.state.handsFree = phase }
+            }
         }
         prChanges = tracker.$prs.sink { [weak self] list in
             MainActor.assumeIsolated {

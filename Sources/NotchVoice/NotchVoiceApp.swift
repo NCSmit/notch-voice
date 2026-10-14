@@ -47,7 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notch?.flash()
         }
         let preferences = Preferences(muteHotkey: muteHotkey)
-        handsFree = HandsFreeController(dictation: dictation, preferences: preferences)
+        let handsFree = HandsFreeController(dictation: dictation, preferences: preferences)
+        self.handsFree = handsFree
         let permissions = PermissionCenter()
         permissions.isEnabled = { preferences.asksForPermission }
         permissionSetting = preferences.$asksForPermission.dropFirst().filter { !$0 }.sink { _ in
@@ -63,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.tracker = tracker
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker, handsFree: handsFree) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
     }

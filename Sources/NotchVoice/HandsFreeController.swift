@@ -20,6 +20,8 @@ final class HandsFreeController: ObservableObject {
     private let window = CaptureWindow()
     private var previousApp: NSRunningApplication?
     private var enabledChanges: AnyCancellable?
+    private var retryTimer: Timer?
+    private var isEnabled = false
 
     private static let startWispr = URL(string: "wispr-flow://start-hands-free")!
     private static let stopWispr = URL(string: "wispr-flow://stop-hands-free")!
@@ -29,6 +31,7 @@ final class HandsFreeController: ObservableObject {
         self.dictation = dictation
         listener.onWake = { [weak self] in self?.wake() }
         listener.onStop = { [weak self] reason, heard in self?.captureEnded(reason, heard: heard) }
+        listener.onUnavailable = { [weak self] reason in self?.listenerStopped(reason) }
         window.onCancel = { [weak self] in self?.cancel() }
         window.onSend = { [weak self] in self?.sendNow() }
         enabledChanges = preferences.$listensForWakeWord.sink { [weak self] on in
@@ -37,20 +40,62 @@ final class HandsFreeController: ObservableObject {
     }
 
     private func setEnabled(_ on: Bool) {
+        isEnabled = on
+        retryTimer?.invalidate()
+        retryTimer = nil
         if on {
-            Task {
-                guard await WakeWordListener.requestPermissions() else {
-                    phase = .failed("Allow NotchVoice to use the microphone and speech recognition in System Settings › Privacy & Security.")
-                    return
-                }
-                listener.start()
-                phase = listener.isRunning ? .listening : .failed("On-device speech recognition isn't available on this Mac.")
-            }
+            arm()
         } else {
             cancel()
             listener.stop()
             phase = .off
         }
+    }
+
+    /// Start listening, or say why not and try again shortly: a permission granted in System Settings, or a speech
+    /// model that finishes downloading, is picked up without restarting NotchVoice.
+    private func arm() {
+        log.info("arming hands-free (enabled: \(self.isEnabled, privacy: .public), running: \(self.listener.isRunning, privacy: .public))")
+        guard isEnabled, !listener.isRunning else { return }
+        Task {
+            let reason: String?
+            if let permission = await WakeWordListener.requestPermissions() {
+                reason = permission
+            } else if !WakeWordListener.isDictationEnabled {
+                // Don't open the microphone just to fail again; wait for the setting to change.
+                reason = listener.unavailableReason()
+            } else {
+                listener.start()
+                reason = listener.isRunning ? nil : (listener.unavailableReason() ?? "The microphone couldn't be started; retrying.")
+            }
+            guard isEnabled else { return }
+            if let reason {
+                log.error("hands-free not armed: \(reason, privacy: .public)")
+                phase = .failed(reason)
+                retryTimer?.invalidate()
+                let timer = Timer(timeInterval: 10, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.arm() }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                retryTimer = timer
+            } else {
+                log.info("hands-free armed")
+                phase = .listening
+            }
+        }
+    }
+
+    private func listenerStopped(_ reason: String) {
+        log.error("hands-free stopped: \(reason, privacy: .public)")
+        if phase == .capturing { cancel() }
+        phase = .failed(reason)
+        retryTimer?.invalidate()
+        // Slow retry: a setting changed in System Settings is picked up without restarting NotchVoice.
+        let timer = Timer(timeInterval: 30, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.arm() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        retryTimer = timer
     }
 
     private func wake() {

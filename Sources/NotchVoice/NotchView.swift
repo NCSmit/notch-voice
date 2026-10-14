@@ -28,6 +28,7 @@ struct NotchRootView: View {
             prs: state.prs,
             tab: state.shownTab,
             selectTab: { tab in withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.tab = tab } },
+            handsFree: state.handsFree,
             isOrchestratorMode: voice.isOrchestratorMode,
             setOrchestratorMode: voice.setOrchestratorMode,
             isPinned: preferences.isPanelPinned,
@@ -54,6 +55,7 @@ struct NotchView: View {
     let prs: [TrackedPR]
     let tab: NotchTab
     let selectTab: @MainActor (NotchTab) -> Void
+    let handsFree: HandsFreeController.Phase
     let isOrchestratorMode: Bool
     let setOrchestratorMode: @MainActor (Bool) -> Void
     let isPinned: Bool
@@ -65,10 +67,13 @@ struct NotchView: View {
     var body: some View {
         let isExpanded = isOpen || prompt != nil
         let rows = tab == .sessions ? sessions.count : prs.count
-        let size = prompt != nil ? metrics.permissionSize : isOpen ? metrics.openSize(rows: rows, hasTabs: !prs.isEmpty) : metrics.closedSize
+        let showsIndicator = handsFree != .off
+        let size = prompt != nil ? metrics.permissionSize
+            : isOpen ? metrics.openSize(rows: rows, hasTabs: !prs.isEmpty)
+            : showsIndicator ? metrics.closedSizeWithIndicator : metrics.closedSize
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
-        let showsBody = isExpanded || isGlowing
+        let showsBody = isExpanded || isGlowing || handsFree != .off
 
         ZStack(alignment: .top) {
             NotchGlow(
@@ -81,6 +86,13 @@ struct NotchView: View {
                 .animation(showsBody ? .easeOut(duration: 0.15) : .easeIn(duration: 0.2).delay(0.3)) {
                     $0.opacity(showsBody ? 1 : 0)
                 }
+            if !isExpanded, showsIndicator {
+                HandsFreeIndicator(phase: handsFree, accent: theme.accent)
+                    .frame(width: NotchMetrics.indicatorWidth, height: metrics.notch.height)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.trailing, NotchMetrics.closedTopRadius)
+                    .transition(.opacity)
+            }
             if let prompt {
                 PermissionCard(prompt: prompt, pendingCount: pendingCount, accent: theme.accent, answer: answer)
                     .id(prompt.id)
@@ -96,6 +108,7 @@ struct NotchView: View {
                         isSpeaking: isSpeaking,
                         isOrchestratorMode: isOrchestratorMode,
                         hasOrchestrator: orchestratorID != nil,
+                        handsFree: handsFree,
                         isPinned: isPinned,
                         accent: theme.accent,
                         setEnabled: setEnabled,
@@ -201,6 +214,7 @@ struct VoicePanel: View {
     let isSpeaking: Bool
     let isOrchestratorMode: Bool
     let hasOrchestrator: Bool
+    let handsFree: HandsFreeController.Phase
     let isPinned: Bool
     let accent: LinearGradient
     let setEnabled: @MainActor (Bool) -> Void
@@ -222,7 +236,9 @@ struct VoicePanel: View {
                         .foregroundStyle(.white)
                     Text(status)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(statusIsWarning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.white.opacity(0.5)))
+                        .lineLimit(1)
+                        .help(status)
                         .contentTransition(.opacity)
                 }
                 Spacer(minLength: 8)
@@ -288,10 +304,53 @@ struct VoicePanel: View {
     }
 
     private var status: String {
+        if case .failed(let reason) = handsFree { return "Hands-free: " + reason }
+        if handsFree == .capturing { return "Listening to you… say \u{201C}send it\u{201D}" }
         if isSpeaking { return "Speaking…" }
         guard isEnabled else { return "Off" }
         guard isOrchestratorMode else { return "Replies are read aloud" }
         return hasOrchestrator ? "Only the orchestrator speaks" : "Run /orchestrator in a session"
+    }
+}
+
+extension VoicePanel {
+    var statusIsWarning: Bool {
+        if case .failed = handsFree { return true }
+        return false
+    }
+}
+
+/// A small mic beside the closed notch: armed for "Hey orchestrator", hearing a message, or unable to listen.
+struct HandsFreeIndicator: View {
+    let phase: HandsFreeController.Phase
+    let accent: LinearGradient
+
+    var body: some View {
+        Group {
+            switch phase {
+            case .listening:
+                Image(systemName: "mic.fill").foregroundStyle(accent).opacity(0.85)
+            case .capturing, .sending:
+                Image(systemName: "mic.fill").foregroundStyle(.red).symbolEffect(.pulse, isActive: true)
+            case .failed:
+                Image(systemName: "mic.slash.fill").foregroundStyle(.orange)
+            case .off:
+                EmptyView()
+            }
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private var help: String {
+        switch phase {
+        case .listening: "Listening for \u{201C}Hey orchestrator\u{201D}"
+        case .capturing: "Taking your message"
+        case .sending: "Sending to the orchestrator"
+        case .failed(let reason): reason
+        case .off: ""
+        }
     }
 }
 

@@ -52,7 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notch?.flash()
         }
         let preferences = Preferences(muteHotkey: muteHotkey)
-        let handsFree = HandsFreeController(dictation: dictation, preferences: preferences)
+        preferences.attachSkipHotkeys(
+            skip: Hotkey { voice.skip() },
+            skipAll: Hotkey { voice.skip(all: true) }
+        )
+        let handsFree = HandsFreeController(dictation: dictation, preferences: preferences, voice: voice)
         self.handsFree = handsFree
         let permissions = PermissionCenter()
         permissions.isEnabled = { preferences.asksForPermission }

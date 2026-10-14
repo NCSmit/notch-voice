@@ -70,6 +70,13 @@ final class SpeechPlayer: ObservableObject {
         log.info("resumed")
     }
 
+    /// Skip the rest of the current reply; the next queued one starts.
+    func skip() {
+        guard isSpeaking else { return }
+        log.info("skipped")
+        finish(reply: "skipped")
+    }
+
     /// Stop the current reply (voice replies switched off).
     func stop() {
         guard isSpeaking else { return }

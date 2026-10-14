@@ -4,6 +4,8 @@ import Foundation
 final class Preferences: ObservableObject {
     private static let themeKey = "glowTheme"
     private static let muteShortcutKey = "muteShortcut"
+    private static let skipShortcutKey = "skipShortcut"
+    private static let skipAllShortcutKey = "skipAllShortcut"
     private static let permissionsKey = "asksForPermissionInNotch"
     private static let pinnedKey = "keepsPanelOpen"
     private static let wakeWordKey = "listensForWakeWord"
@@ -13,6 +15,10 @@ final class Preferences: ObservableObject {
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
     @Published private(set) var muteShortcut: Shortcut?
+    @Published private(set) var skipShortcut: Shortcut?
+    @Published private(set) var skipAllShortcut: Shortcut?
+    private var skipHotkey: Hotkey?
+    private var skipAllHotkey: Hotkey?
     @Published private(set) var asksForPermission: Bool
     /// Once opened, the notch panel stays open until it is unpinned, instead of collapsing when the mouse leaves.
     @Published private(set) var isPanelPinned: Bool
@@ -84,6 +90,48 @@ final class Preferences: ObservableObject {
 
     func pauseMuteShortcut(_ paused: Bool) {
         _ = muteHotkey.register(paused ? nil : muteShortcut)
+    }
+
+    /// Shortcuts that skip the reply being read aloud, or it and everything queued after it.
+    func attachSkipHotkeys(skip: Hotkey, skipAll: Hotkey) {
+        skipHotkey = skip
+        skipAllHotkey = skipAll
+        skipShortcut = Self.saved(Self.skipShortcutKey).flatMap { skip.register($0) ? $0 : nil }
+        skipAllShortcut = Self.saved(Self.skipAllShortcutKey).flatMap { skipAll.register($0) ? $0 : nil }
+    }
+
+    func setSkipShortcut(_ shortcut: Shortcut?) -> Bool {
+        guard skipHotkey?.register(shortcut) ?? false else { return false }
+        skipShortcut = shortcut
+        Self.save(shortcut, Self.skipShortcutKey)
+        return true
+    }
+
+    func setSkipAllShortcut(_ shortcut: Shortcut?) -> Bool {
+        guard skipAllHotkey?.register(shortcut) ?? false else { return false }
+        skipAllShortcut = shortcut
+        Self.save(shortcut, Self.skipAllShortcutKey)
+        return true
+    }
+
+    func pauseSkipShortcuts(_ paused: Bool) {
+        _ = skipHotkey?.register(paused ? nil : skipShortcut)
+        _ = skipAllHotkey?.register(paused ? nil : skipAllShortcut)
+    }
+
+    private static func saved(_ key: String) -> Shortcut? {
+        guard let saved = UserDefaults.standard.dictionary(forKey: key),
+              let keyCode = saved["keyCode"] as? UInt32,
+              let modifiers = saved["modifiers"] as? UInt32 else { return nil }
+        return Shortcut(keyCode: keyCode, modifiers: modifiers)
+    }
+
+    private static func save(_ shortcut: Shortcut?, _ key: String) {
+        if let shortcut {
+            UserDefaults.standard.set(["keyCode": shortcut.keyCode, "modifiers": shortcut.modifiers], forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 
     func refresh() {

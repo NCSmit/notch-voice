@@ -40,7 +40,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1110)
+    static let size = CGSize(width: 470, height: 1200)
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -122,6 +122,18 @@ struct SettingsView: View {
                         shortcut: preferences.muteShortcut,
                         setShortcut: preferences.setMuteShortcut,
                         pauseShortcut: preferences.pauseMuteShortcut
+                    )
+                    ShortcutRecorder(
+                        title: "Skip reply",
+                        shortcut: preferences.skipShortcut,
+                        setShortcut: preferences.setSkipShortcut,
+                        pauseShortcut: preferences.pauseSkipShortcuts
+                    )
+                    ShortcutRecorder(
+                        title: "Skip all queued replies",
+                        shortcut: preferences.skipAllShortcut,
+                        setShortcut: preferences.setSkipAllShortcut,
+                        pauseShortcut: preferences.pauseSkipShortcuts
                     )
                     Toggle("Open at Login", isOn: opensAtLogin)
                 }

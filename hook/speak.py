@@ -48,6 +48,8 @@ QUEUE_MAX_WAIT = 20 * 60  # the Stop hook's timeout is set above this in install
 SILENT_MARKER = "\u2014"
 # NotchVoice's speech player (Sources/NotchVoice/SpeechPlayer.swift).
 PLAYER_SOCKET = os.path.join(user_temp_dir(), "notchvoice_player.sock")
+# Written by NotchVoice's "skip all": replies queued before this time (ns since 1970) stay silent.
+SKIP_MARKER = os.path.join(user_temp_dir(), "notchvoice_skip_before")
 # The session_id of the reply currently speaking, so the notch can light up that session.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
@@ -190,6 +192,16 @@ def others_waiting(ticket):
         return False
 
 
+def skipped_by_user(ticket):
+    """True when the user chose "skip all" after this reply joined the queue."""
+    try:
+        with open(SKIP_MARKER) as f:
+            marker = int(f.read().strip())
+        return int(os.path.basename(ticket).split("-", 1)[0]) <= marker
+    except (OSError, ValueError):
+        return False
+
+
 def wait_for_turn(ticket):
     deadline = time.time() + QUEUE_MAX_WAIT
     while queue_ahead_of(ticket):
@@ -307,7 +319,7 @@ def play_in_app(path, session_id):
         decision = json.loads(reply or b"{}").get("decision")
     except ValueError:
         decision = None
-    return decision in ("done", "stopped")
+    return decision in ("done", "stopped", "skipped")
 
 
 def is_silent(raw):
@@ -338,7 +350,7 @@ def main():
 
     ticket = enqueue()
     try:
-        if not wait_for_turn(ticket) or not wait_for_dictation_to_end():
+        if not wait_for_turn(ticket) or not wait_for_dictation_to_end() or skipped_by_user(ticket):
             return
         # Voice replies may have been switched off while this one waited.
         if os.path.exists(MUTE_FILE) and not os.environ.get("NOTCHVOICE_SAMPLE"):

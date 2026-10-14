@@ -552,6 +552,17 @@ class QueueTests(unittest.TestCase):
         self.assertTrue(speak.others_waiting(mine))
         speak.leave_queue(other)
 
+    def test_skip_all_silences_replies_queued_before_it(self):
+        marker = os.path.join(self.dir.name, "skip")
+        with mock.patch.object(speak, "SKIP_MARKER", marker):
+            early = self.ticket(100, os.getpid())
+            late = self.ticket(300, os.getpid())
+            self.assertFalse(speak.skipped_by_user(early))
+            with open(marker, "w") as f:
+                f.write("200")
+            self.assertTrue(speak.skipped_by_user(early))
+            self.assertFalse(speak.skipped_by_user(late))
+
     def test_an_em_dash_or_nothing_means_stay_quiet(self):
         self.assertTrue(speak.is_silent("\u2014"))
         self.assertTrue(speak.is_silent("  \u2014\n"))

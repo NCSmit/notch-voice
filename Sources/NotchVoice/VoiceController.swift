@@ -28,6 +28,8 @@ final class VoiceController: ObservableObject {
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
     // The session_id of the reply being spoken, written by the hook next to the owner file.
     private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
+    // "Skip all": replies queued before this time (nanoseconds since 1970) are not spoken.
+    private let skipMarker = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice_skip_before")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
@@ -58,6 +60,24 @@ final class VoiceController: ObservableObject {
             FileManager.default.createFile(atPath: muteFile.path, contents: nil)
             player?.stop()
         }
+        refresh()
+    }
+
+    /// Skip the rest of the reply being spoken. With `all`, replies already waiting in the queue are dropped too:
+    /// speak.py skips any reply whose queue ticket is older than the marker written here.
+    func skip(all: Bool = false) {
+        if all {
+            let nanoseconds = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
+            try? String(nanoseconds).write(to: skipMarker, atomically: true, encoding: .utf8)
+        }
+        player?.skip()
+        // A reply played by a plain `say` process (NotchVoice wasn't reachable when it started).
+        if let sayPid = ownerPids().dropFirst().first, Self.processName(sayPid) == "say" {
+            kill(sayPid, SIGTERM)
+            kill(sayPid, SIGCONT)
+            if pausedSay == sayPid { pausedSay = nil }
+        }
+        log.info("skipped \(all ? "all replies" : "the current reply", privacy: .public)")
         refresh()
     }
 

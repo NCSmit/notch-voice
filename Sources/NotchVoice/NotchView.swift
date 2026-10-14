@@ -41,6 +41,7 @@ struct NotchRootView: View {
             setOrchestratorMode: voice.setOrchestratorMode,
             isPinned: preferences.isPanelPinned,
             setPinned: preferences.setPanelPinned,
+            skip: { all in voice.skip(all: all) },
             setEnabled: voice.setEnabled,
             answer: answer,
             openSettings: openSettings
@@ -74,6 +75,7 @@ struct NotchView: View {
     let setOrchestratorMode: @MainActor (Bool) -> Void
     let isPinned: Bool
     let setPinned: @MainActor (Bool) -> Void
+    let skip: @MainActor (Bool) -> Void
     let setEnabled: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
@@ -129,6 +131,7 @@ struct NotchView: View {
                         setEnabled: setEnabled,
                         setOrchestratorMode: setOrchestratorMode,
                         setPinned: setPinned,
+                        skip: skip,
                         openSettings: openSettings
                     )
                     .frame(height: NotchMetrics.voiceRowHeight)
@@ -313,6 +316,7 @@ struct VoicePanel: View {
     let setEnabled: @MainActor (Bool) -> Void
     let setOrchestratorMode: @MainActor (Bool) -> Void
     let setPinned: @MainActor (Bool) -> Void
+    let skip: @MainActor (Bool) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
@@ -339,6 +343,26 @@ struct VoicePanel: View {
             .contentShape(Rectangle())
             .onTapGesture { setEnabled(!isEnabled) }
             .accessibilityElement(children: .combine)
+
+            if isSpeaking {
+                Button { skip(false) } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.white.opacity(0.18)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Skip this reply (Option-click skips everything queued)")
+                .simultaneousGesture(TapGesture().modifiers(.option).onEnded { skip(true) })
+                .contextMenu {
+                    Button("Skip this reply") { skip(false) }
+                    Button("Skip all queued replies") { skip(true) }
+                }
+                .accessibilityLabel("Skip reply")
+                .transition(.scale.combined(with: .opacity))
+            }
 
             Button { setPinned(!isPinned) } label: {
                 Image(systemName: isPinned ? "pin.fill" : "pin")

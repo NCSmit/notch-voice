@@ -49,9 +49,11 @@ final class HandsFreeController: ObservableObject {
     /// How long to wait for Wispr's transcript before using Apple's on-device one.
     private static let wisprTextWait: TimeInterval = 4
 
-    init(dictation: DictationMonitor, preferences: Preferences) {
+    init(dictation: DictationMonitor, preferences: Preferences, voice: VoiceController) {
         self.dictation = dictation
         self.preferences = preferences
+        listener.isSpeaking = { [weak voice] in voice?.isSpeaking ?? false }
+        listener.onSkip = { [weak voice] all in voice?.skip(all: all) }
         listener.onWake = { [weak self] in self?.wake() }
         listener.onStop = { [weak self] reason, heard in self?.captureEnded(reason, heard: heard) }
         listener.onUnavailable = { [weak self] reason in self?.listenerStopped(reason) }

@@ -27,6 +27,10 @@ final class WakeWordListener {
     var onUnavailable: (String) -> Void = { _ in }
     /// The live transcript of the message being dictated, for the notch to show.
     var onTranscript: (String) -> Void = { _ in }
+    /// "Skip" (true = "skip all") said as a whole phrase while a reply is being read aloud.
+    var onSkip: (Bool) -> Void = { _ in }
+    /// Whether a reply is being read aloud right now; spoken skips only count then.
+    var isSpeaking: () -> Bool = { false }
 
     private(set) var isRunning = false
     private(set) var mode = Mode.wake
@@ -223,7 +227,7 @@ final class WakeWordListener {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true
         request.shouldReportPartialResults = true
-        request.contextualStrings = ["Hey orchestrator", "orchestrator", "send it", "cancel that"]
+        request.contextualStrings = ["Hey orchestrator", "orchestrator", "send it", "cancel that", "skip", "skip all"]
         feed.set(request)
         task = recognizer?.recognitionTask(with: request) { [weak self] result, error in
             let nsError = error.map { $0 as NSError }
@@ -279,7 +283,11 @@ final class WakeWordListener {
         heardCount += 1
         switch mode {
         case .wake:
-            if Self.containsWakeWord(text) {
+            if isSpeaking(), let all = Self.skipCommand(text) {
+                log.info("spoken skip\(all ? " all" : "", privacy: .public)")
+                onSkip(all)
+                startRequest()  // clear the phrase so it isn't acted on twice
+            } else if Self.containsWakeWord(text) {
                 log.info("wake word heard")
                 onWake()
             }
@@ -353,6 +361,15 @@ final class WakeWordListener {
         // the word on its own as a whole phrase ("Orchestra"). A mention mid-sentence doesn't count.
         return words.range(of: "\\b(hey|hi|hay|a|okay|ok) orchestra(tor|ter|te)?s?\\b", options: .regularExpression) != nil
             || words.range(of: "^((hey|hi|hay|a|okay|ok) )?orchestra(tor|ter|te)?s?$", options: .regularExpression) != nil
+    }
+
+    /// A spoken skip: the whole phrase, so NotchVoice's own speech (which never is just "skip") and normal talk don't
+    /// trigger it. nil = not a skip; true = skip all.
+    nonisolated static func skipCommand(_ text: String) -> Bool? {
+        let words = normalized(text)
+        if words.range(of: "^((hey )?orchestra(tor)?s? )?(skip|stop) (all|everything)$", options: .regularExpression) != nil { return true }
+        if words.range(of: "^((hey )?orchestra(tor)?s? )?(skip|skip it|skip that|next)$", options: .regularExpression) != nil { return false }
+        return nil
     }
 
     /// "Cancel that" at the end throws the message away. ("Scratch that" is Wispr Flow's own undo command.)

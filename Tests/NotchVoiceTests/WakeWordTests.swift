@@ -26,6 +26,15 @@ struct WakeWordTests {
         #expect(!WakeWordListener.endsWithAbortWord("cancel that meeting and send it"))
     }
 
+    @Test func spokenSkipOnlyAsAWholePhrase() {
+        #expect(WakeWordListener.skipCommand("Skip") == false)
+        #expect(WakeWordListener.skipCommand("Orchestrator, skip.") == false)
+        #expect(WakeWordListener.skipCommand("next") == false)
+        #expect(WakeWordListener.skipCommand("Skip all") == true)
+        #expect(WakeWordListener.skipCommand("hey orchestrator stop everything") == true)
+        #expect(WakeWordListener.skipCommand("we can skip the tests for now") == nil)
+    }
+
     @Test func stripsTheStopPhraseButKeepsTheMessage() {
         #expect(WakeWordListener.strippingStopPhrase("Tell the quote session to merge. That's it for now, send it.") == "Tell the quote session to merge. That's it for now")
         #expect(WakeWordListener.strippingStopPhrase("merge it send it") == "merge it")

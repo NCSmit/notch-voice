@@ -40,7 +40,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 926)
+    static let size = CGSize(width: 470, height: 1026)
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -74,6 +74,13 @@ struct SettingsView: View {
                     Text("Voice")
                 } footer: {
                     Text("Reminds Claude to answer in a few sentences while voice replies are on.")
+                }
+                Section {
+                    Toggle("Orchestrator mode", isOn: orchestratorMode)
+                } header: {
+                    Text("Sessions")
+                } footer: {
+                    Text("Only the session where you ran /orchestrator speaks. It briefs you on the others and passes your instructions on to them.")
                 }
                 Section {
                     LabeledContent("Music volume") {
@@ -229,6 +236,10 @@ struct SettingsView: View {
 
     private var keepsRepliesShort: Binding<Bool> {
         Binding(get: { voice.keepsRepliesShort }, set: { voice.setKeepsRepliesShort($0) })
+    }
+
+    private var orchestratorMode: Binding<Bool> {
+        Binding(get: { voice.isOrchestratorMode }, set: { voice.setOrchestratorMode($0) })
     }
 
     private var musicVolume: Binding<Double> {

@@ -23,7 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notch: NotchController?
     private var settings: SettingsWindowController?
     private var permissions: PermissionCenter?
+    private var sessions: SessionStore?
+    private var tracker: TrackerStore?
     private var permissionSetting: AnyCancellable?
+    private var dictation: DictationMonitor?
+    private var dictationChanges: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -31,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let voice = VoiceController()
+        let dictation = DictationMonitor()
+        dictationChanges = dictation.$isDictating.sink { dictating in
+            MainActor.assumeIsolated { voice.setDictating(dictating) }
+        }
+        dictation.start()
+        self.dictation = dictation
         let muteHotkey = Hotkey { [weak self] in
             voice.setEnabled(!voice.isEnabled)
             self?.notch?.flash()
@@ -43,9 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         permissions.start()
         self.permissions = permissions
+        let sessions = SessionStore()
+        sessions.start()
+        self.sessions = sessions
+        let tracker = TrackerStore()
+        tracker.start(sessions: sessions)
+        self.tracker = tracker
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
     }

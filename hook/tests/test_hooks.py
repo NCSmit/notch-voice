@@ -28,6 +28,7 @@ brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
+sessions = load("notchvoice_sessions")
 
 
 def run_main(module, payload):
@@ -330,3 +331,197 @@ class DesktopConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(sessions, "SESSIONS_DIR", self.dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.dir.cleanup)
+
+    def send(self, event, **fields):
+        run_main(sessions, {"hook_event_name": event, "session_id": "abc-123", "cwd": "/Users/someone/demo", **fields})
+        with open(os.path.join(self.dir.name, "abc-123.json")) as f:
+            return json.load(f)
+
+    def test_follows_a_session_from_prompt_to_reply(self):
+        status = self.send("UserPromptSubmit", prompt="Fix   the login\nbug please")
+        self.assertEqual((status["state"], status["title"], status["project"]), ("working", "Fix the login bug please", "demo"))
+        status = self.send("PreToolUse", tool_name="Edit", tool_input={"file_path": "/Users/someone/demo/login.py"})
+        self.assertEqual(status["activity"], "Editing login.py")
+        status = self.send("PermissionRequest", tool_name="Bash", tool_input={"command": "npm test", "description": "Run the tests"})
+        self.assertEqual((status["state"], status["activity"]), ("waiting", "Needs you: Running Run the tests"))
+        status = self.send("Stop", last_assistant_message="**Fixed** the bug. Tests pass now.")
+        self.assertEqual((status["state"], status["activity"]), ("idle", "Fixed the bug."))
+        status = self.send("UserPromptSubmit", prompt="Now ship it")
+        self.assertEqual(status["title"], "Fix the login bug please")
+
+    def test_an_older_event_never_overwrites_a_newer_one(self):
+        self.send("Stop", last_assistant_message="Done.")
+        with mock.patch.object(sessions.time, "time", return_value=1.0):
+            status = self.send("PreToolUse", tool_name="Read", tool_input={})
+        self.assertEqual(status["state"], "idle")
+
+    def test_an_ended_session_stays_ended_until_it_is_resumed(self):
+        self.send("SessionEnd")
+        self.assertEqual(self.send("PostToolUse", tool_name="Read")["state"], "ended")
+        self.assertEqual(self.send("SessionStart")["state"], "idle")
+
+    def test_ignores_unknown_events_and_unsafe_session_ids(self):
+        run_main(sessions, {"hook_event_name": "Notification", "session_id": "abc"})
+        run_main(sessions, {"hook_event_name": "Stop", "session_id": "../evil"})
+        run_main(sessions, {"hook_event_name": "Stop"})
+        self.assertEqual(os.listdir(self.dir.name), [])
+
+    def test_long_titles_and_mcp_tools_are_shortened(self):
+        status = self.send("UserPromptSubmit", prompt="x" * 200)
+        self.assertEqual(len(status["title"]), sessions.TITLE_LENGTH)
+        status = self.send("PreToolUse", tool_name="mcp__tracker__save_issue", tool_input={})
+        self.assertEqual(status["activity"], "Using save issue")
+
+
+class OrchestratorModeTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        root = self.dir.name
+        self.settings = os.path.join(root, "tts_settings.json")
+        self.orchestrator = os.path.join(root, "orchestrator.json")
+        self.sessions = os.path.join(root, "sessions")
+        os.makedirs(self.sessions)
+        for module, names in ((speak, ("ORCHESTRATOR_FILE", "SESSIONS_DIR")), (brief, ("ORCHESTRATOR_FILE", "SETTINGS_FILE"))):
+            for name in names:
+                value = {"ORCHESTRATOR_FILE": self.orchestrator, "SESSIONS_DIR": self.sessions, "SETTINGS_FILE": self.settings}[name]
+                patcher = mock.patch.object(module, name, value)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+
+    def write(self, path, data):
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def test_everyone_speaks_until_the_mode_is_on_and_a_session_claims_it(self):
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {}))
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+        self.write(self.orchestrator, {"session_id": "boss"})
+        self.assertTrue(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+        self.assertFalse(speak.silenced({"session_id": "boss"}, {"orchestrator": True}))
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": False}))
+
+    def test_samples_and_desktop_chats_always_speak(self):
+        self.write(self.orchestrator, {"session_id": "boss"})
+        self.assertFalse(speak.silenced({}, {"orchestrator": True}))
+
+    def test_an_ended_orchestrator_hands_the_voice_back(self):
+        self.write(self.orchestrator, {"session_id": "boss"})
+        self.write(os.path.join(self.sessions, "boss.json"), {"state": "ended"})
+        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+
+    def test_only_the_orchestrator_is_reminded_to_keep_replies_short(self):
+        self.write(self.settings, {"orchestrator": True})
+        self.write(self.orchestrator, {"session_id": "boss"})
+        with mock.patch.object(brief, "MUTE_FILE", os.path.join(self.dir.name, "missing")):
+            self.assertEqual(run_main(brief, {"session_id": "worker"}), "")
+            self.assertIn("read aloud", run_main(brief, {"session_id": "boss"}))
+
+
+class HandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for name, sub in (("SESSIONS_DIR", "sessions"), ("HANDOFF_DIR", "handoffs")):
+            os.makedirs(os.path.join(self.dir.name, sub))
+            patcher = mock.patch.object(sessions, name, os.path.join(self.dir.name, sub))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_compacted_session_gets_its_saved_state_back(self):
+        with open(os.path.join(self.dir.name, "handoffs", "abc.json".replace(".json", ".md")), "w") as f:
+            f.write("## Goal\nShip the session list")
+        output = run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"})
+        self.assertIn("Ship the session list", json.loads(output)["hookSpecificOutput"]["additionalContext"])
+
+    def test_a_normal_start_adds_nothing(self):
+        self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")
+
+
+_spec = importlib.util.spec_from_file_location("snapshot", HOOKS.parent / "orchestrator" / "snapshot.py")
+snapshot = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(snapshot)
+
+
+class TrackerTests(unittest.TestCase):
+    def test_bugbot_is_read_apart_from_the_rest_of_ci(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "Cursor Bugbot", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+        ]
+        self.assertEqual(snapshot.check_summary(rollup), ("passing", "findings"))
+        rollup[1] = {"name": "Cursor Bugbot", "status": "IN_PROGRESS", "conclusion": ""}
+        self.assertEqual(snapshot.check_summary(rollup)[1], "running")
+        self.assertEqual(snapshot.check_summary([{"name": "Cursor Bugbot", "status": "COMPLETED", "conclusion": "SUCCESS"}]), ("none", "clean"))
+
+    def test_one_failing_check_fails_ci_and_a_running_one_keeps_it_pending(self):
+        self.assertEqual(snapshot.check_summary([{"name": "a", "status": "COMPLETED", "conclusion": "FAILURE"},
+                                                 {"name": "b", "status": "QUEUED"}])[0], "failing")
+        self.assertEqual(snapshot.check_summary([{"context": "vercel", "state": "PENDING"}])[0], "pending")
+        self.assertEqual(snapshot.check_summary([]), ("none", "missing"))
+
+    def test_the_session_that_created_a_pr_owns_it(self):
+        claims = {}
+        key = ("me/repo", 7)
+        snapshot.claim_pr(claims, key, "mentioner", 1)
+        snapshot.claim_pr(claims, key, "on-branch", 2)
+        snapshot.claim_pr(claims, key, "creator", 3)
+        snapshot.claim_pr(claims, key, "late-mention", 1)
+        self.assertEqual(claims[key][0], "creator")
+
+    def test_finds_prs_a_session_created_or_mentioned(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "t.jsonl")
+            entries = [
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "1", "name": "Bash", "input": {"command": "gh pr create --fill"}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "1", "content": "https://github.com/me/repo/pull/12"}]}},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "2", "name": "Bash", "input": {"command": "gh pr list"}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "2", "content": "see https://github.com/other/thing/pull/3"}]}},
+            ]
+            with open(path, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in entries))
+            self.assertEqual(snapshot.transcript_prs(path), {("me/repo", 12): "created", ("other/thing", 3): "mentioned"})
+
+
+class DictationWaitTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.flag = os.path.join(self.dir.name, "notchvoice_dictating")
+        for name, value in (("DICTATION_FILE", self.flag), ("OWNER_FILE", os.path.join(self.dir.name, "owner"))):
+            patcher = mock.patch.object(speak, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_speaks_straight_away_when_nobody_is_dictating(self):
+        speak.take_over()
+        self.assertTrue(speak.wait_for_dictation_to_end())
+
+    def test_waits_until_dictation_ends(self):
+        open(self.flag, "w").close()
+        speak.take_over()
+        threading.Timer(0.5, os.remove, [self.flag]).start()
+        started = time.time()
+        self.assertTrue(speak.wait_for_dictation_to_end())
+        self.assertGreaterEqual(time.time() - started, 0.4)
+
+    def test_a_flag_left_behind_long_ago_is_ignored(self):
+        open(self.flag, "w").close()
+        old = time.time() - speak.DICTATION_STALE_SECONDS - 5
+        os.utime(self.flag, (old, old))
+        self.assertFalse(speak.user_is_dictating())
+
+    def test_gives_up_quietly_when_a_newer_reply_takes_over(self):
+        open(self.flag, "w").close()
+        speak.take_over()
+        threading.Timer(0.3, speak.write_owner, [999999]).start()
+        self.assertFalse(speak.wait_for_dictation_to_end())

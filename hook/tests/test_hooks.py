@@ -28,6 +28,7 @@ brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
+sessions = load("notchvoice_sessions")
 
 
 def run_main(module, payload):
@@ -330,3 +331,52 @@ class DesktopConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(sessions, "SESSIONS_DIR", self.dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.dir.cleanup)
+
+    def send(self, event, **fields):
+        run_main(sessions, {"hook_event_name": event, "session_id": "abc-123", "cwd": "/Users/someone/demo", **fields})
+        with open(os.path.join(self.dir.name, "abc-123.json")) as f:
+            return json.load(f)
+
+    def test_follows_a_session_from_prompt_to_reply(self):
+        status = self.send("UserPromptSubmit", prompt="Fix   the login\nbug please")
+        self.assertEqual((status["state"], status["title"], status["project"]), ("working", "Fix the login bug please", "demo"))
+        status = self.send("PreToolUse", tool_name="Edit", tool_input={"file_path": "/Users/someone/demo/login.py"})
+        self.assertEqual(status["activity"], "Editing login.py")
+        status = self.send("PermissionRequest", tool_name="Bash", tool_input={"command": "npm test", "description": "Run the tests"})
+        self.assertEqual((status["state"], status["activity"]), ("waiting", "Needs you: Running Run the tests"))
+        status = self.send("Stop", last_assistant_message="**Fixed** the bug. Tests pass now.")
+        self.assertEqual((status["state"], status["activity"]), ("idle", "Fixed the bug."))
+        status = self.send("UserPromptSubmit", prompt="Now ship it")
+        self.assertEqual(status["title"], "Fix the login bug please")
+
+    def test_an_older_event_never_overwrites_a_newer_one(self):
+        self.send("Stop", last_assistant_message="Done.")
+        with mock.patch.object(sessions.time, "time", return_value=1.0):
+            status = self.send("PreToolUse", tool_name="Read", tool_input={})
+        self.assertEqual(status["state"], "idle")
+
+    def test_an_ended_session_stays_ended_until_it_is_resumed(self):
+        self.send("SessionEnd")
+        self.assertEqual(self.send("PostToolUse", tool_name="Read")["state"], "ended")
+        self.assertEqual(self.send("SessionStart")["state"], "idle")
+
+    def test_ignores_unknown_events_and_unsafe_session_ids(self):
+        run_main(sessions, {"hook_event_name": "Notification", "session_id": "abc"})
+        run_main(sessions, {"hook_event_name": "Stop", "session_id": "../evil"})
+        run_main(sessions, {"hook_event_name": "Stop"})
+        self.assertEqual(os.listdir(self.dir.name), [])
+
+    def test_long_titles_and_mcp_tools_are_shortened(self):
+        status = self.send("UserPromptSubmit", prompt="x" * 200)
+        self.assertEqual(len(status["title"]), sessions.TITLE_LENGTH)
+        status = self.send("PreToolUse", tool_name="mcp__tracker__save_issue", tool_input={})
+        self.assertEqual(status["activity"], "Using save issue")

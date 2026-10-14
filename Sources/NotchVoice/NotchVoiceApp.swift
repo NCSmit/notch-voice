@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notch: NotchController?
     private var settings: SettingsWindowController?
     private var permissions: PermissionCenter?
+    private var sessions: SessionStore?
     private var permissionSetting: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -43,9 +44,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         permissions.start()
         self.permissions = permissions
+        let sessions = SessionStore()
+        sessions.start()
+        self.sessions = sessions
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
     }

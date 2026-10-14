@@ -10,6 +10,7 @@ final class VoiceController: ObservableObject {
 
     @Published private(set) var isEnabled = true
     @Published private(set) var isSpeaking = false
+    @Published private(set) var speakingSession: String?
     @Published private(set) var voiceID: String?
     @Published private(set) var voiceName = "System Voice"
     @Published private(set) var systemVoiceLabel = "System Voice"
@@ -22,6 +23,8 @@ final class VoiceController: ObservableObject {
     private let muteFile = URL.homeDirectory.appending(path: ".claude/tts_off")
     private let settingsFile = URL.homeDirectory.appending(path: ".claude/tts_settings.json")
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
+    // The session_id of the reply being spoken, written by the hook next to the owner file.
+    private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
@@ -112,6 +115,8 @@ final class VoiceController: ObservableObject {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")
         }
+        let session = speaking ? (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        if speakingSession != session { speakingSession = session }
         setPolling(pids.contains { Self.isAlive($0) })
     }
 

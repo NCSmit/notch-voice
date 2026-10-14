@@ -34,6 +34,8 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
+# The session_id of the reply currently speaking, so the notch can light up that session.
+SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
 
 def is_tool_result_only(content):
@@ -119,6 +121,17 @@ def take_over():
     write_owner(os.getpid())
 
 
+def write_session(session_id):
+    try:
+        if isinstance(session_id, str) and session_id:
+            with open(SESSION_FILE, "w") as f:
+                f.write(session_id)
+        else:
+            os.remove(SESSION_FILE)
+    except OSError:
+        pass
+
+
 def osascript(script):
     result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     return result.stdout.strip()
@@ -177,6 +190,7 @@ def main():
         cmd += ["-r", str(rate)]
 
     take_over()
+    write_session(payload.get("session_id"))
     duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.
@@ -187,6 +201,7 @@ def main():
     if is_owner():
         restore_music()
         os.remove(OWNER_FILE)
+        write_session(None)
 
 if __name__ == "__main__":
     main()

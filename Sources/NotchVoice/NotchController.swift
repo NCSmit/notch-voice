@@ -86,9 +86,13 @@ final class NotchController {
     private var orchestratorChanges: AnyCancellable?
     private var prChanges: AnyCancellable?
     private var glowPreview = 0
+    private let preferences: Preferences
+    private var reopenAfterPrompt = false
+    private var pinChanges: AnyCancellable?
 
     init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, sessions: SessionStore, tracker: TrackerStore, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
+        self.preferences = preferences
         let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings)
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
@@ -97,6 +101,10 @@ final class NotchController {
 
         mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             MainActor.assumeIsolated { self?.mouseMoved() }
+        }
+        pinChanges = preferences.$isPanelPinned.dropFirst().sink { [weak self] _ in
+            // Unpinning with the mouse elsewhere should collapse the panel straight away.
+            MainActor.assumeIsolated { self?.startTracking() }
         }
         themeChanges = preferences.$theme.dropFirst().removeDuplicates().sink { [weak self] _ in
             MainActor.assumeIsolated { self?.previewGlow() }
@@ -157,7 +165,11 @@ final class NotchController {
     }
 
     private func mouseMoved() {
-        if state.isOpen || hoverZone.contains(NSEvent.mouseLocation) { startTracking() }
+        if state.isOpen, state.prompt == nil, preferences.isPanelPinned {
+            track()
+        } else if state.isOpen || hoverZone.contains(NSEvent.mouseLocation) {
+            startTracking()
+        }
     }
 
     private func startTracking() {
@@ -187,6 +199,12 @@ final class NotchController {
         if state.isOpen {
             let inside = panelZone.contains(mouse) || isMenuOpen
             setInteractive(inside)
+            if preferences.isPanelPinned {
+                // A pinned panel never closes, so drop the 30 Hz timer; mouse-move events keep it taking clicks
+                // only while it's under the mouse.
+                stopTracking()
+                return
+            }
             if inside {
                 leaveStart = nil
                 return
@@ -224,12 +242,17 @@ final class NotchController {
 
     private func showPermission(_ prompt: PermissionPrompt?, count: Int) {
         guard state.prompt?.id != prompt?.id || state.pendingCount != count else { return }
+        if prompt != nil, state.prompt == nil { reopenAfterPrompt = state.isOpen && preferences.isPanelPinned }
         withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
             state.prompt = prompt
             state.pendingCount = count
             if prompt != nil { state.isOpen = false }
         }
         if prompt != nil {
+            startTracking()
+        } else if reopenAfterPrompt {
+            reopenAfterPrompt = false
+            setOpen(true)
             startTracking()
         } else {
             setInteractive(false)

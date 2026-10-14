@@ -30,6 +30,8 @@ struct NotchRootView: View {
             selectTab: { tab in withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.tab = tab } },
             isOrchestratorMode: voice.isOrchestratorMode,
             setOrchestratorMode: voice.setOrchestratorMode,
+            isPinned: preferences.isPanelPinned,
+            setPinned: preferences.setPanelPinned,
             setEnabled: voice.setEnabled,
             answer: answer,
             openSettings: openSettings
@@ -54,6 +56,8 @@ struct NotchView: View {
     let selectTab: @MainActor (NotchTab) -> Void
     let isOrchestratorMode: Bool
     let setOrchestratorMode: @MainActor (Bool) -> Void
+    let isPinned: Bool
+    let setPinned: @MainActor (Bool) -> Void
     let setEnabled: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
@@ -92,9 +96,11 @@ struct NotchView: View {
                         isSpeaking: isSpeaking,
                         isOrchestratorMode: isOrchestratorMode,
                         hasOrchestrator: orchestratorID != nil,
+                        isPinned: isPinned,
                         accent: theme.accent,
                         setEnabled: setEnabled,
                         setOrchestratorMode: setOrchestratorMode,
+                        setPinned: setPinned,
                         openSettings: openSettings
                     )
                     .frame(height: NotchMetrics.voiceRowHeight)
@@ -195,9 +201,11 @@ struct VoicePanel: View {
     let isSpeaking: Bool
     let isOrchestratorMode: Bool
     let hasOrchestrator: Bool
+    let isPinned: Bool
     let accent: LinearGradient
     let setEnabled: @MainActor (Bool) -> Void
     let setOrchestratorMode: @MainActor (Bool) -> Void
+    let setPinned: @MainActor (Bool) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
@@ -222,6 +230,20 @@ struct VoicePanel: View {
             .contentShape(Rectangle())
             .onTapGesture { setEnabled(!isEnabled) }
             .accessibilityElement(children: .combine)
+
+            Button { setPinned(!isPinned) } label: {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isPinned ? AnyShapeStyle(accent) : AnyShapeStyle(Color.white.opacity(0.75)))
+                    .rotationEffect(.degrees(isPinned ? 0 : 45))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(isPinned ? "Pinned open. Click to let the panel close when the mouse leaves." : "Keep the panel open")
+            .accessibilityLabel("Keep panel open")
+            .accessibilityValue(isPinned ? "On" : "Off")
 
             Button { setOrchestratorMode(!isOrchestratorMode) } label: {
                 Image(systemName: isOrchestratorMode ? "crown.fill" : "person.3.fill")

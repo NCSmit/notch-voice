@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictation: DictationMonitor?
     private var dictationChanges: AnyCancellable?
     private var handsFree: HandsFreeController?
+    private var player: SpeechPlayer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -36,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let voice = VoiceController()
+        let player = SpeechPlayer()
+        player.start()
+        voice.attach(player)
+        self.player = player
         let dictation = DictationMonitor()
         dictationChanges = dictation.$isDictating.sink { dictating in
             MainActor.assumeIsolated { voice.setDictating(dictating) }

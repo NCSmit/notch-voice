@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Foundation
 import os
 
@@ -33,6 +34,16 @@ final class VoiceController: ObservableObject {
     private var sample: Process?
     private var isDictating = false
     private var pausedSay: pid_t?
+    private var playerChanges: AnyCancellable?
+    /// Replies normally play here; a `say` process only plays them when NotchVoice wasn't reachable.
+    private(set) var player: SpeechPlayer?
+
+    func attach(_ player: SpeechPlayer) {
+        self.player = player
+        playerChanges = player.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
+        }
+    }
 
     init() {
         loadSettings()
@@ -45,6 +56,7 @@ final class VoiceController: ObservableObject {
             try? FileManager.default.removeItem(at: muteFile)
         } else {
             FileManager.default.createFile(atPath: muteFile.path, contents: nil)
+            player?.stop()
         }
         refresh()
     }
@@ -53,6 +65,7 @@ final class VoiceController: ObservableObject {
     /// where it left off afterwards. Replies that haven't started yet wait in speak.py for the dictation flag file.
     func setDictating(_ dictating: Bool) {
         isDictating = dictating
+        if dictating { player?.pause() } else { player?.resume() }
         if !dictating, let pid = pausedSay {
             kill(pid, SIGCONT)
             pausedSay = nil
@@ -139,12 +152,15 @@ final class VoiceController: ObservableObject {
             log.info("paused say \(sayPid) while the user dictates")
         }
         if isEnabled != enabled { isEnabled = enabled }
-        let speaking = sayPid != nil && (enabled || isSample) && pausedSay != sayPid
+        let playerSpeaking = player.map { $0.isSpeaking && !$0.isPaused } ?? false
+        let speaking = (sayPid != nil && (enabled || isSample) && pausedSay != sayPid) || playerSpeaking
         if isSpeaking != speaking {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")
         }
-        let session = speaking ? (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        let session = !speaking ? nil
+            : playerSpeaking ? player?.session
+            : (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         if speakingSession != session { speakingSession = session }
         setPolling(pids.contains { Self.isAlive($0) })
     }

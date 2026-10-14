@@ -10,6 +10,7 @@ Mute: touch ~/.claude/tts_off   Unmute: rm ~/.claude/tts_off   (NotchVoice sampl
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,8 @@ QUEUE_DIR = os.path.join(user_temp_dir(), "claude_tts_queue")
 QUEUE_MAX_WAIT = 20 * 60  # the Stop hook's timeout is set above this in install.sh
 # A reply that is just this marker means "nothing to say": the orchestrator ends quiet check-ins with it.
 SILENT_MARKER = "\u2014"
+# NotchVoice's speech player (Sources/NotchVoice/SpeechPlayer.swift).
+PLAYER_SOCKET = os.path.join(user_temp_dir(), "notchvoice_player.sock")
 # The session_id of the reply currently speaking, so the notch can light up that session.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
@@ -268,6 +271,45 @@ def restore_music():
         set_app_volume(app, volume)
 
 
+def render(cmd, text):
+    """Render the reply to an audio file with `say -o` (offline, much faster than real time), for NotchVoice to play."""
+    if not os.path.exists(PLAYER_SOCKET):
+        return None
+    fd, path = tempfile.mkstemp(prefix="notchvoice_reply_", suffix=".aiff", dir=user_temp_dir())
+    os.close(fd)
+    try:
+        subprocess.run(cmd + ["-o", path], input=text, text=True, check=True, timeout=120)
+        return path if os.path.getsize(path) > 0 else None
+    except (OSError, subprocess.SubprocessError):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+
+
+def play_in_app(path, session_id):
+    """Have NotchVoice play the file; it follows audio route changes (AirPods call mode) and pauses for dictation.
+    Returns False if the app couldn't be reached, so the caller can fall back to `say`."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect(PLAYER_SOCKET)
+            connection.sendall((json.dumps({"path": path, "session_id": session_id or ""}) + "\n").encode())
+            reply = b""
+            while not reply.endswith(b"\n"):
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                reply += chunk
+    except OSError:
+        return False
+    try:
+        decision = json.loads(reply or b"{}").get("decision")
+    except ValueError:
+        decision = None
+    return decision in ("done", "stopped")
+
+
 def is_silent(raw):
     return raw.strip() in ("", SILENT_MARKER)
 
@@ -303,10 +345,18 @@ def main():
             return
         write_owner(os.getpid())
         write_session(payload.get("session_id"))
+        audio = render(cmd, text)
         duck_music(music_level(settings))
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
-        write_owner(os.getpid(), proc.pid)
-        proc.communicate(text)
+        if not (audio and play_in_app(audio, payload.get("session_id"))):
+            # NotchVoice isn't running (or couldn't play it): speak straight to the device as before.
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+            write_owner(os.getpid(), proc.pid)
+            proc.communicate(text)
+        if audio:
+            try:
+                os.remove(audio)
+            except OSError:
+                pass
     finally:
         leave_queue(ticket)
         # The last reply in the queue brings the music back; one still waiting keeps it down.

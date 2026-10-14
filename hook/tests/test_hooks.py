@@ -490,3 +490,38 @@ class TrackerTests(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("\n".join(json.dumps(e) for e in entries))
             self.assertEqual(snapshot.transcript_prs(path), {("me/repo", 12): "created", ("other/thing", 3): "mentioned"})
+
+
+class DictationWaitTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.flag = os.path.join(self.dir.name, "notchvoice_dictating")
+        for name, value in (("DICTATION_FILE", self.flag), ("OWNER_FILE", os.path.join(self.dir.name, "owner"))):
+            patcher = mock.patch.object(speak, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_speaks_straight_away_when_nobody_is_dictating(self):
+        speak.take_over()
+        self.assertTrue(speak.wait_for_dictation_to_end())
+
+    def test_waits_until_dictation_ends(self):
+        open(self.flag, "w").close()
+        speak.take_over()
+        threading.Timer(0.5, os.remove, [self.flag]).start()
+        started = time.time()
+        self.assertTrue(speak.wait_for_dictation_to_end())
+        self.assertGreaterEqual(time.time() - started, 0.4)
+
+    def test_a_flag_left_behind_long_ago_is_ignored(self):
+        open(self.flag, "w").close()
+        old = time.time() - speak.DICTATION_STALE_SECONDS - 5
+        os.utime(self.flag, (old, old))
+        self.assertFalse(speak.user_is_dictating())
+
+    def test_gives_up_quietly_when_a_newer_reply_takes_over(self):
+        open(self.flag, "w").close()
+        speak.take_over()
+        threading.Timer(0.3, speak.write_owner, [999999]).start()
+        self.assertFalse(speak.wait_for_dictation_to_end())

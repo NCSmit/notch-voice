@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
@@ -36,6 +37,10 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
+# Exists while the user is dictating (NotchVoice watches Wispr Flow and Apple dictation use the microphone).
+DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
+DICTATION_STALE_SECONDS = 15 * 60  # a flag this old was left behind by an app that quit mid-dictation
+DICTATION_MAX_WAIT = 270  # the Stop hook's timeout is 300 s
 # The session_id of the reply currently speaking, so the notch can light up that session.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
@@ -151,6 +156,23 @@ def take_over():
     write_owner(os.getpid())
 
 
+def user_is_dictating():
+    try:
+        return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_STALE_SECONDS
+    except OSError:
+        return False
+
+
+def wait_for_dictation_to_end():
+    """Never start talking over the user. Returns False if a newer reply took over while we waited."""
+    deadline = time.time() + DICTATION_MAX_WAIT
+    while user_is_dictating() and time.time() < deadline:
+        time.sleep(0.2)
+        if not is_owner():
+            return False
+    return True
+
+
 def write_session(session_id):
     try:
         if isinstance(session_id, str) and session_id:
@@ -223,6 +245,8 @@ def main():
 
     take_over()
     write_session(payload.get("session_id"))
+    if not wait_for_dictation_to_end():
+        return
     duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.

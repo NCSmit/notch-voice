@@ -31,6 +31,8 @@ final class VoiceController: ObservableObject {
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
     private var sample: Process?
+    private var isDictating = false
+    private var pausedSay: pid_t?
 
     init() {
         loadSettings()
@@ -43,6 +45,18 @@ final class VoiceController: ObservableObject {
             try? FileManager.default.removeItem(at: muteFile)
         } else {
             FileManager.default.createFile(atPath: muteFile.path, contents: nil)
+        }
+        refresh()
+    }
+
+    /// Never talk over the user: a reply already speaking is paused (SIGSTOP) while they dictate and picks up
+    /// where it left off afterwards. Replies that haven't started yet wait in speak.py for the dictation flag file.
+    func setDictating(_ dictating: Bool) {
+        isDictating = dictating
+        if !dictating, let pid = pausedSay {
+            kill(pid, SIGCONT)
+            pausedSay = nil
+            log.info("resumed say \(pid) after dictation")
         }
         refresh()
     }
@@ -114,11 +128,18 @@ final class VoiceController: ObservableObject {
         let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
         if let sayPid, !enabled, !isSample {
             // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
+            // A paused `say` only acts on SIGTERM once it is continued.
             kill(sayPid, SIGTERM)
+            kill(sayPid, SIGCONT)
+            if pausedSay == sayPid { pausedSay = nil }
             log.info("stopped say \(sayPid) because voice replies are off")
+        } else if let sayPid, isDictating, pausedSay != sayPid, !isSample {
+            kill(sayPid, SIGSTOP)
+            pausedSay = sayPid
+            log.info("paused say \(sayPid) while the user dictates")
         }
         if isEnabled != enabled { isEnabled = enabled }
-        let speaking = sayPid != nil && (enabled || isSample)
+        let speaking = sayPid != nil && (enabled || isSample) && pausedSay != sayPid
         if isSpeaking != speaking {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")

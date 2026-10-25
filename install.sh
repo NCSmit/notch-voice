@@ -49,6 +49,7 @@ if os.path.exists(path):
 EOF
   rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
   rm -rf "$HOME/.claude/notchvoice/sessions"
+  rmdir "$HOME/.claude/notchvoice" 2>/dev/null || true
   python3 hook/notchvoice_desktop.py
   echo "NotchVoice and its hooks are removed. Restart Claude Code."
   exit 0

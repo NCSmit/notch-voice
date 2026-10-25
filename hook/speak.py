@@ -34,7 +34,8 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
-# The session_id of the reply currently speaking, so the notch can light up that session.
+# "<hook pid> <session_id>" of the reply currently speaking, so the menu bar can mark that session. The app only trusts
+# it while the hook pid matches the owner file.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
 
@@ -122,12 +123,22 @@ def take_over():
 
 
 def write_session(session_id):
+    if not isinstance(session_id, str) or not session_id:
+        return
+    temp = f"{SESSION_FILE}.{os.getpid()}"
     try:
-        if isinstance(session_id, str) and session_id:
-            with open(SESSION_FILE, "w") as f:
-                f.write(session_id)
-        else:
-            os.remove(SESSION_FILE)
+        with open(temp, "w") as f:
+            f.write(f"{os.getpid()} {session_id}")
+        os.replace(temp, SESSION_FILE)
+    except OSError:
+        pass
+
+
+def clear_session():
+    try:
+        with open(SESSION_FILE) as f:
+            if f.read().split()[:1] == [str(os.getpid())]:
+                os.remove(SESSION_FILE)
     except OSError:
         pass
 
@@ -201,7 +212,7 @@ def main():
     if is_owner():
         restore_music()
         os.remove(OWNER_FILE)
-        write_session(None)
+        clear_session()
 
 if __name__ == "__main__":
     main()

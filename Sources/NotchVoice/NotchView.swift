@@ -18,8 +18,6 @@ struct NotchRootView: View {
             theme: preferences.theme,
             prompt: state.prompt,
             pendingCount: state.pendingCount,
-            sessions: state.sessions,
-            speakingSession: voice.isSpeaking ? voice.speakingSession : nil,
             setEnabled: voice.setEnabled,
             answer: answer,
             openSettings: openSettings
@@ -36,15 +34,13 @@ struct NotchView: View {
     let theme: GlowTheme
     let prompt: PermissionPrompt?
     let pendingCount: Int
-    let sessions: [ClaudeSession]
-    let speakingSession: String?
     let setEnabled: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
         let isExpanded = isOpen || prompt != nil
-        let size = prompt != nil ? metrics.permissionSize : isOpen ? metrics.openSize(sessions: sessions.count) : metrics.closedSize
+        let size = prompt != nil ? metrics.permissionSize : isOpen ? metrics.openSize : metrics.closedSize
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
         let showsBody = isExpanded || isGlowing
@@ -69,20 +65,13 @@ struct NotchView: View {
                         removal: .opacity.animation(.easeIn(duration: 0.1))
                     ))
             } else if isOpen {
-                VStack(spacing: 0) {
-                    VoicePanel(
-                        isEnabled: isEnabled,
-                        isSpeaking: isSpeaking,
-                        accent: theme.accent,
-                        setEnabled: setEnabled,
-                        openSettings: openSettings
-                    )
-                    .frame(height: NotchMetrics.voiceRowHeight)
-                    if !sessions.isEmpty {
-                        SessionList(sessions: sessions, speakingSession: speakingSession, accent: theme.accent)
-                    }
-                }
-                .frame(maxHeight: .infinity, alignment: .top)
+                VoicePanel(
+                    isEnabled: isEnabled,
+                    isSpeaking: isSpeaking,
+                    accent: theme.accent,
+                    setEnabled: setEnabled,
+                    openSettings: openSettings
+                )
                 .padding(.top, metrics.notch.height)
                 .transition(.asymmetric(
                     insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
@@ -226,105 +215,6 @@ struct VoicePanel: View {
     private var status: String {
         if isSpeaking { return "Speaking…" }
         return isEnabled ? "Replies are read aloud" : "Off"
-    }
-}
-
-struct SessionList: View {
-    let sessions: [ClaudeSession]
-    let speakingSession: String?
-    let accent: LinearGradient
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(sessions) { session in
-                SessionRow(session: session, isSpeaking: session.id == speakingSession, accent: accent)
-                    .frame(height: NotchMetrics.sessionRowHeight)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, NotchMetrics.sessionListPadding)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Claude Code sessions")
-    }
-}
-
-struct SessionRow: View {
-    let session: ClaudeSession
-    let isSpeaking: Bool
-    let accent: LinearGradient
-
-    var body: some View {
-        HStack(spacing: 10) {
-            indicator
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(session.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(session.state == .idle && !isSpeaking ? 0.7 : 1))
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(session.state == .waiting ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.white.opacity(0.5)))
-                    .lineLimit(1)
-                    .contentTransition(.opacity)
-            }
-            Spacer(minLength: 6)
-            if !session.project.isEmpty, session.project != session.title {
-                Text(session.project)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.35))
-                    .lineLimit(1)
-                    .frame(maxWidth: 110, alignment: .trailing)
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(maxHeight: .infinity)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(accent)
-                .opacity(isSpeaking ? 0.28 : 0)
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(accent, lineWidth: 1)
-                .opacity(isSpeaking ? 0.9 : 0)
-        }
-        .animation(.easeInOut(duration: 0.3), value: isSpeaking)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var subtitle: String {
-        if isSpeaking { return "Speaking…" }
-        if session.state == .idle {
-            return session.activity.isEmpty || session.activity == "Ready" ? "Done" : session.activity
-        }
-        return session.activity.isEmpty ? "Working" : session.activity
-    }
-
-    @ViewBuilder
-    private var indicator: some View {
-        if isSpeaking {
-            Image(systemName: "waveform")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(accent)
-                .symbolEffect(.variableColor.iterative, isActive: true)
-        } else {
-            switch session.state {
-            case .waiting:
-                Image(systemName: "hand.raised.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .symbolEffect(.pulse, isActive: true)
-            case .working:
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(accent)
-                    .symbolEffect(.pulse, isActive: true)
-            case .idle:
-                Image(systemName: "checkmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.35))
-            }
-        }
     }
 }
 

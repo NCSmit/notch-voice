@@ -23,11 +23,13 @@ final class VoiceController: ObservableObject {
     private let muteFile = URL.homeDirectory.appending(path: ".claude/tts_off")
     private let settingsFile = URL.homeDirectory.appending(path: ".claude/tts_settings.json")
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
-    // The session_id of the reply being spoken, written by the hook next to the owner file.
+    // "<hook pid> <session_id>" of the reply being spoken, written by the hook next to the owner file.
     private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
+    // The hook whose session speakingSession was read for, so the file is read once per reply.
+    private var sessionOwner: pid_t?
     private var sample: Process?
 
     init() {
@@ -102,7 +104,7 @@ final class VoiceController: ObservableObject {
     func refresh() {
         let enabled = !FileManager.default.fileExists(atPath: muteFile.path)
         let pids = ownerPids()
-        let sayPid = pids.dropFirst().first.flatMap { Self.processName($0) == "say" ? $0 : nil }
+        let sayPid = pids.dropFirst().first.flatMap { Processes.name(of: $0) == "say" ? $0 : nil }
         let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
         if let sayPid, !enabled, !isSample {
             // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
@@ -115,9 +117,14 @@ final class VoiceController: ObservableObject {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")
         }
-        let session = speaking ? (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-        if speakingSession != session { speakingSession = session }
-        setPolling(pids.contains { Self.isAlive($0) })
+        let owner = speaking ? pids.first : nil
+        if owner != sessionOwner {
+            let session = owner.flatMap(speakingSession(of:))
+            if speakingSession != session { speakingSession = session }
+            // The hook writes the session just after claiming the voice, so keep looking until it names this owner.
+            if session != nil || owner == nil { sessionOwner = owner }
+        }
+        setPolling(pids.contains { Processes.isAlive($0) })
     }
 
     private func saveSettings() {
@@ -130,6 +137,13 @@ final class VoiceController: ObservableObject {
         } catch {
             log.error("could not save settings: \(error.localizedDescription)")
         }
+    }
+
+    private func speakingSession(of owner: pid_t) -> String? {
+        guard let text = try? String(contentsOf: sessionFile, encoding: .utf8) else { return nil }
+        let fields = text.split(whereSeparator: \.isWhitespace)
+        guard fields.count == 2, pid_t(fields[0]) == owner else { return nil }
+        return String(fields[1])
     }
 
     private func ownerPids() -> [pid_t] {
@@ -160,15 +174,5 @@ final class VoiceController: ObservableObject {
         source.setCancelHandler { close(descriptor) }
         source.resume()
         directoryWatcher = source
-    }
-
-    private nonisolated static func isAlive(_ pid: pid_t) -> Bool {
-        kill(pid, 0) == 0 || errno == EPERM
-    }
-
-    private nonisolated static func processName(_ pid: pid_t) -> String? {
-        var buffer = [CChar](repeating: 0, count: 64)
-        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-        return buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
     }
 }

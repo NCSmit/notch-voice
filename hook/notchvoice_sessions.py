@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Session hook: keeps a small status file per Claude Code session, so the notch can list what each one is doing.
+"""Session hook: keeps a small status file per Claude Code session, so the menu bar can list what each one is doing.
 
 Registered (async) for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest, Stop and SessionEnd.
 Each event rewrites ~/.claude/notchvoice/sessions/<session_id>.json with:
-  state     "working", "waiting" (asking for permission), "idle" (finished its reply) or "ended"
+  state     "working", "waiting" (needs an answer from you), "idle" (finished its reply) or "ended"
   title     the session's first prompt, shortened
   activity  what it is doing right now, or the start of its last reply once it is idle
   project   the folder it runs in; cwd and transcript_path are kept too, for tools that want the full picture
-  updated   when the event happened, in seconds since 1970
+  updated   when the event happened, and started when the first one did, in seconds since 1970
+  pid       the Claude Code process, and process its name, so the app can tell when the session has closed (pid is
+            null when ps couldn't find it, and the app then goes by age)
+  app       the bundle id of the app the session runs in, and tty its terminal, so the app can bring it forward
 Async hooks can finish out of order, so an event never overwrites a newer one.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -28,6 +32,9 @@ STATES = {
     "Stop": "idle",
     "SessionEnd": "ended",
 }
+# Tools that stop and wait for an answer, with what to show while they wait.
+WAITING_TOOLS = {"AskUserQuestion": "Needs you: a question", "ExitPlanMode": "Needs you: a plan to approve"}
+SHELLS = {"sh", "bash", "zsh", "dash", "fish"}
 
 
 def shorten(text, limit):
@@ -70,6 +77,35 @@ def activity_for(tool, tool_input):
     return f"Using {tool}" if tool else "Working"
 
 
+def process_info(pid):
+    """The parent pid, terminal and name of a process, from ps."""
+    try:
+        result = subprocess.run(["ps", "-o", "ppid=,tty=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    fields = result.stdout.strip().split(None, 2)
+    if len(fields) != 3 or not fields[0].isdigit():
+        return None
+    return int(fields[0]), fields[1], os.path.basename(fields[2])
+
+
+def claude_process():
+    """The Claude Code process that ran this hook. A shell between the two is skipped."""
+    pid = os.getppid()
+    for _ in range(2):
+        info = process_info(pid)
+        if info is None:
+            return {}
+        parent, tty, name = info
+        if name.lstrip("-") not in SHELLS:
+            found = {"pid": pid, "process": name}
+            if re.fullmatch(r"ttys?\d+", tty):
+                found["tty"] = "/dev/" + tty
+            return found
+        pid = parent
+    return {}
+
+
 def read(path):
     try:
         with open(path) as f:
@@ -86,11 +122,19 @@ def write(path, data):
     os.replace(temp, path)
 
 
-def updated_status(previous, payload, now):
+def updated_status(previous, payload, now, process=None):
     event = payload.get("hook_event_name", "")
     status = dict(previous)
     status["state"] = STATES[event]
+    if process is not None:
+        for key in ("pid", "process", "tty", "app"):
+            status.pop(key, None)
+        status.update(process or {"pid": None})
+        app = os.environ.get("__CFBundleIdentifier")
+        if app:
+            status["app"] = app
     status["updated"] = now
+    status.setdefault("started", now)
     for key in ("session_id", "cwd", "transcript_path"):
         if payload.get(key):
             status[key] = payload[key]
@@ -101,6 +145,9 @@ def updated_status(previous, payload, now):
         if not status.get("title") and prompt.strip():
             status["title"] = shorten(prompt, TITLE_LENGTH)
         status["activity"] = "Thinking"
+    elif event in ("PreToolUse", "PermissionRequest") and payload.get("tool_name") in WAITING_TOOLS:
+        status["state"] = "waiting"
+        status["activity"] = WAITING_TOOLS[payload["tool_name"]]
     elif event in ("PreToolUse", "PermissionRequest"):
         activity = activity_for(payload.get("tool_name", ""), payload.get("tool_input"))
         status["activity"] = shorten(("Needs you: " if event == "PermissionRequest" else "") + activity, ACTIVITY_LENGTH)
@@ -129,9 +176,13 @@ def main():
         os.makedirs(SESSIONS_DIR, exist_ok=True)
         path = os.path.join(SESSIONS_DIR, f"{session}.json")
         previous = read(path)
-        if previous.get("updated", 0) > now or (previous.get("state") == "ended" and payload["hook_event_name"] != "SessionStart"):
+        event = payload["hook_event_name"]
+        if previous.get("updated", 0) > now or (previous.get("state") == "ended" and event != "SessionStart"):
             return
-        write(path, updated_status(previous, payload, now))
+        # Looked up once per process, even when ps finds nothing: a resumed session runs in a new one, and starts with
+        # SessionStart.
+        process = claude_process() if event == "SessionStart" or "pid" not in previous else None
+        write(path, updated_status(previous, payload, now, process))
     except OSError:
         pass
 

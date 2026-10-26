@@ -43,7 +43,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1303)
+    static let size = CGSize(width: 470, height: 1340)
     /// The room the Wispr Flow row and its longer footer take, when Wispr Flow is installed.
     static let wisprFlowHeight: CGFloat = 52
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
@@ -140,6 +140,16 @@ struct SettingsView: View {
                         Text("Holding it down").tag(TalkMode.hold)
                         Text("Pressing it to start").tag(TalkMode.press)
                     }
+                    LabeledContent("Pause before sending") {
+                        HStack(spacing: 10) {
+                            Slider(value: pauseBeforeSending, in: TalkPolicy.pauses, step: 0.5)
+                            Text(String(format: "%.1f s", preferences.pauseBeforeSending))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    }
+                    .help("How long a pause sends a message after \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D} or a press of the talk shortcut. Holding the shortcut down sends when you let go.")
                     if preferences.hasWisprFlow {
                         Picker("Write out messages with", selection: transcriber) {
                             Text("Apple (on this Mac)").tag(Transcriber.apple)
@@ -299,6 +309,10 @@ struct SettingsView: View {
 
     private var talkMode: Binding<TalkMode> {
         Binding(get: { preferences.talkMode }, set: { preferences.setTalkMode($0) })
+    }
+
+    private var pauseBeforeSending: Binding<Double> {
+        Binding(get: { preferences.pauseBeforeSending }, set: { preferences.setPauseBeforeSending($0) })
     }
 
     private var transcriber: Binding<Transcriber> {

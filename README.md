@@ -105,7 +105,7 @@ The first time, Claude Code asks before the orchestrator runs its helper and bef
 
 Speak to your orchestrator without going to its window. Your words go to the session where you ran `/orchestrator`, and it answers out loud.
 
-- **Say "Hey Jarvis".** Turn on **Listen for "Hey Jarvis"** in settings, then say the phrase and your message in one go, such as "Hey Jarvis, which session needs me?". A pause sends it. You can give it another name in settings.
+- **Say "Hey Jarvis".** Turn on **Listen for "Hey Jarvis"** in settings, then say the phrase and your message in one go, such as "Hey Jarvis, which session needs me?". A pause sends it. You can give it another name in settings, and set how long the pause is.
 - **Or use the talk shortcut.** Set it in settings, and choose whether you hold it while you speak and let go to send, or press it once to start and pause or press again to send.
 - **See and hear what's going on.** The notch shows your words as you speak, and a short sound marks the start and the send. Say "cancel" at the end, or click ✕, to stop without sending.
 - **Replies wait for you.** While you speak, a reply that's playing pauses, as it does when you dictate.
@@ -154,7 +154,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
 - **Permissions.** Turn permission requests in the notch on or off.
 - **Sessions.** Show or hide your sessions in the menu bar.
-- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, set the talk shortcut and whether you hold or press it, and choose whether your Mac or Wispr Flow writes out your messages.
+- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, set the talk shortcut and whether you hold or press it, choose how long a pause sends a message (1 to 5 seconds, 2.5 by default), and choose whether your Mac or Wispr Flow writes out your messages.
 - **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
 
 <p align="center">

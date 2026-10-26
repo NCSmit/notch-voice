@@ -33,6 +33,7 @@ final class Preferences: ObservableObject {
     private static let talkShortcutKey = "talkShortcut"
     private static let talkModeKey = "talkMode"
     private static let transcriberKey = "transcriber"
+    private static let pauseKey = "pauseBeforeSending"
 
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
@@ -45,6 +46,8 @@ final class Preferences: ObservableObject {
     @Published private(set) var talkShortcut: Shortcut?
     @Published private(set) var talkMode: TalkMode
     @Published private(set) var transcriber: Transcriber
+    /// How long a pause sends a message said after "Hey Jarvis", or started by pressing the talk shortcut.
+    @Published private(set) var pauseBeforeSending: TimeInterval
     /// Wispr Flow is installed, so it can be chosen to write out messages.
     @Published private(set) var hasWisprFlow: Bool
     private let muteHotkey: Hotkey
@@ -60,6 +63,7 @@ final class Preferences: ObservableObject {
         talkMode = UserDefaults.standard.string(forKey: Self.talkModeKey).flatMap(TalkMode.init(rawValue:)) ?? .hold
         transcriber = UserDefaults.standard.string(forKey: Self.transcriberKey).flatMap(Transcriber.init(rawValue:)) ?? .apple
         hasWisprFlow = WisprFlow.isAvailable
+        pauseBeforeSending = TalkPolicy.pause(UserDefaults.standard.object(forKey: Self.pauseKey) as? Double ?? TalkPolicy.defaultPause)
         self.muteHotkey = muteHotkey
         self.talkHotkey = talkHotkey
         muteShortcut = Self.savedShortcut(Self.muteShortcutKey).flatMap { muteHotkey.register($0) ? $0 : nil }
@@ -85,6 +89,11 @@ final class Preferences: ObservableObject {
     func setTranscriber(_ transcriber: Transcriber) {
         self.transcriber = transcriber
         UserDefaults.standard.set(transcriber.rawValue, forKey: Self.transcriberKey)
+    }
+
+    func setPauseBeforeSending(_ seconds: TimeInterval) {
+        pauseBeforeSending = TalkPolicy.pause(seconds)
+        UserDefaults.standard.set(pauseBeforeSending, forKey: Self.pauseKey)
     }
 
     func setTalkShortcut(_ shortcut: Shortcut?) -> Bool {

@@ -70,18 +70,26 @@ enum TalkPolicy {
         case keepListening, send, nothingSaid
     }
 
-    static let pause: TimeInterval = 1.8
+    /// How long a pause must last to send a message, unless the user sets another length within `pauses`.
+    static let defaultPause: TimeInterval = 2.5
+    static let pauses: ClosedRange<TimeInterval> = 1...5
     /// A message that began more than this before Wispr Flow was listening has lost its first words there.
     static let wisprHeadStart: TimeInterval = 0.15
     static let waitForWords: TimeInterval = 7
     static let longest: TimeInterval = 90
 
-    static func decide(_ trigger: Trigger, heard: String, sinceStart: TimeInterval, sinceLastWords: TimeInterval) -> Decision {
+    static func decide(_ trigger: Trigger, heard: String, sinceStart: TimeInterval, sinceLastWords: TimeInterval,
+                       pause: TimeInterval) -> Decision {
         let saidSomething = !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if sinceStart >= longest { return saidSomething ? .send : .nothingSaid }
         if trigger == .hold { return .keepListening }
         if !saidSomething { return sinceStart >= waitForWords ? .nothingSaid : .keepListening }
         return sinceLastWords >= pause ? .send : .keepListening
+    }
+
+    /// A pause length the user can set: within `pauses`, in steps of half a second.
+    static func pause(_ seconds: TimeInterval) -> TimeInterval {
+        min(max((seconds * 2).rounded() / 2, pauses.lowerBound), pauses.upperBound)
     }
 
     /// The words to send for a message Wispr Flow wrote out, and why Apple's transcript is sent instead, when it is:

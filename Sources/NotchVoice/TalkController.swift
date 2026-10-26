@@ -338,7 +338,7 @@ final class TalkController: ObservableObject {
         guard case .capturing(let trigger) = phase else { return }
         let now = Date()
         switch TalkPolicy.decide(trigger, heard: heard, sinceStart: now.timeIntervalSince(captureStarted),
-                                 sinceLastWords: now.timeIntervalSince(lastWords)) {
+                                 sinceLastWords: now.timeIntervalSince(lastWords), pause: preferences.pauseBeforeSending) {
         case .keepListening:
             break
         case .send:

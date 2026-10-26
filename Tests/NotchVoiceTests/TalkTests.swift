@@ -65,21 +65,30 @@ struct TalkPhraseTests {
 
 struct TalkPolicyTests {
     @Test func aPauseSendsWhatWasSaid() {
-        #expect(TalkPolicy.decide(.phrase, heard: "run the tests", sinceStart: 4, sinceLastWords: 0.5) == .keepListening)
-        #expect(TalkPolicy.decide(.phrase, heard: "run the tests", sinceStart: 4, sinceLastWords: TalkPolicy.pause) == .send)
-        #expect(TalkPolicy.decide(.press, heard: "run the tests", sinceStart: 4, sinceLastWords: TalkPolicy.pause) == .send)
+        #expect(TalkPolicy.decide(.phrase, heard: "run the tests", sinceStart: 4, sinceLastWords: 0.5, pause: 2.5) == .keepListening)
+        #expect(TalkPolicy.decide(.phrase, heard: "run the tests", sinceStart: 4, sinceLastWords: 2.5, pause: 2.5) == .send)
+        #expect(TalkPolicy.decide(.press, heard: "run the tests", sinceStart: 4, sinceLastWords: 2.5, pause: 2.5) == .send)
+    }
+
+    @Test func theLengthOfThePauseIsTheUsers() {
+        #expect(TalkPolicy.decide(.phrase, heard: "run the tests", sinceStart: 6, sinceLastWords: 3, pause: 4) == .keepListening)
+        #expect(TalkPolicy.decide(.phrase, heard: "run the tests", sinceStart: 6, sinceLastWords: 1, pause: 1) == .send)
+        #expect(TalkPolicy.pause(TalkPolicy.defaultPause) == 2.5)
+        #expect(TalkPolicy.pause(1.74) == 1.5)
+        #expect(TalkPolicy.pause(0.2) == TalkPolicy.pauses.lowerBound)
+        #expect(TalkPolicy.pause(60) == TalkPolicy.pauses.upperBound)
     }
 
     @Test func holdingWaitsForTheKeysToBeLetGo() {
-        #expect(TalkPolicy.decide(.hold, heard: "run the tests", sinceStart: 30, sinceLastWords: 10) == .keepListening)
-        #expect(TalkPolicy.decide(.hold, heard: "", sinceStart: 30, sinceLastWords: 30) == .keepListening)
+        #expect(TalkPolicy.decide(.hold, heard: "run the tests", sinceStart: 30, sinceLastWords: 10, pause: TalkPolicy.defaultPause) == .keepListening)
+        #expect(TalkPolicy.decide(.hold, heard: "", sinceStart: 30, sinceLastWords: 30, pause: TalkPolicy.defaultPause) == .keepListening)
     }
 
     @Test func silenceAndVeryLongMessagesEndIt() {
-        #expect(TalkPolicy.decide(.phrase, heard: "", sinceStart: 3, sinceLastWords: 3) == .keepListening)
-        #expect(TalkPolicy.decide(.phrase, heard: "", sinceStart: TalkPolicy.waitForWords, sinceLastWords: 7) == .nothingSaid)
-        #expect(TalkPolicy.decide(.hold, heard: "a long one", sinceStart: TalkPolicy.longest, sinceLastWords: 0) == .send)
-        #expect(TalkPolicy.decide(.hold, heard: "", sinceStart: TalkPolicy.longest, sinceLastWords: 0) == .nothingSaid)
+        #expect(TalkPolicy.decide(.phrase, heard: "", sinceStart: 3, sinceLastWords: 3, pause: TalkPolicy.defaultPause) == .keepListening)
+        #expect(TalkPolicy.decide(.phrase, heard: "", sinceStart: TalkPolicy.waitForWords, sinceLastWords: 7, pause: TalkPolicy.defaultPause) == .nothingSaid)
+        #expect(TalkPolicy.decide(.hold, heard: "a long one", sinceStart: TalkPolicy.longest, sinceLastWords: 0, pause: TalkPolicy.defaultPause) == .send)
+        #expect(TalkPolicy.decide(.hold, heard: "", sinceStart: TalkPolicy.longest, sinceLastWords: 0, pause: TalkPolicy.defaultPause) == .nothingSaid)
     }
 
     @Test func wisprFlowsTextIsSentWhenItHeardTheWholeMessage() {

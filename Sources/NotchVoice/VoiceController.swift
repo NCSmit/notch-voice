@@ -31,6 +31,8 @@ final class VoiceController: ObservableObject {
     // The hook whose session speakingSession was read for, so the file is read once per reply.
     private var sessionOwner: pid_t?
     private var sample: Process?
+    // speak.py pauses `say` while the user dictates, so a reply in progress isn't speaking then.
+    private var isDictating = false
 
     init() {
         loadSettings()
@@ -101,18 +103,25 @@ final class VoiceController: ObservableObject {
         }
     }
 
+    func setDictating(_ dictating: Bool) {
+        isDictating = dictating
+        refresh()
+    }
+
     func refresh() {
         let enabled = !FileManager.default.fileExists(atPath: muteFile.path)
         let pids = ownerPids()
         let sayPid = pids.dropFirst().first.flatMap { Processes.name(of: $0) == "say" ? $0 : nil }
         let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
         if let sayPid, !enabled, !isSample {
-            // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
+            // Stopping only `say` lets the hook finish normally, and it restores the music volume itself. A `say` paused
+            // for dictation only acts on SIGTERM once it is continued.
             kill(sayPid, SIGTERM)
+            kill(sayPid, SIGCONT)
             log.info("stopped say \(sayPid) because voice replies are off")
         }
         if isEnabled != enabled { isEnabled = enabled }
-        let speaking = sayPid != nil && (enabled || isSample)
+        let speaking = sayPid != nil && (enabled || isSample) && !(isDictating && !isSample)
         if isSpeaking != speaking {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")

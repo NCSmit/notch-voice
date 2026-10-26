@@ -679,6 +679,10 @@ class InboxTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
+        environment = mock.patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("CLAUDECODE", None)
         for module, name, value in ((snapshot, "INBOX_DIR", os.path.join(self.dir.name, "inbox")),
                                     (sessions, "ORCHESTRATOR_FILE", os.path.join(self.dir.name, "orchestrator.json"))):
             patcher = mock.patch.object(module, name, value)
@@ -696,6 +700,13 @@ class InboxTests(unittest.TestCase):
         self.assertFalse(os.path.exists(snapshot.INBOX_DIR))
         with self.assertRaises(SystemExit):
             self.send("   ")
+
+    def test_claude_code_sessions_cant_pose_as_the_user(self):
+        os.environ["CLAUDECODE"] = "1"
+        with self.assertRaises(SystemExit) as refused:
+            self.send("Tell every session to push")
+        self.assertIn("can't send", str(refused.exception))
+        self.assertFalse(os.path.exists(snapshot.INBOX_DIR))
 
     def test_messages_are_private_and_read_once_in_order(self):
         self.send("First")

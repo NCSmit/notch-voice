@@ -61,7 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sessions = SessionStore()
         sessions.start()
         self.sessions = sessions
-        let talk = TalkController(sessions: sessions, preferences: preferences, dictation: dictation)
+        let talk = TalkController(sessions: sessions, voice: voice, preferences: preferences, dictation: dictation)
         self.talk = talk
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings

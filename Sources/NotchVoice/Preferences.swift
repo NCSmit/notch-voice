@@ -72,10 +72,6 @@ final class Preferences: ObservableObject {
         return true
     }
 
-    func pauseTalkShortcut(_ paused: Bool) {
-        _ = talkHotkey.register(paused ? nil : talkShortcut)
-    }
-
     func setTheme(_ theme: GlowTheme) {
         self.theme = theme
         UserDefaults.standard.set(theme.rawValue, forKey: Self.themeKey)
@@ -103,8 +99,11 @@ final class Preferences: ObservableObject {
         return true
     }
 
-    func pauseMuteShortcut(_ paused: Bool) {
+    /// Turns both shortcuts off while one is being recorded, so the keys reach the recorder instead of muting or
+    /// starting to listen.
+    func pauseShortcuts(_ paused: Bool) {
         _ = muteHotkey.register(paused ? nil : muteShortcut)
+        _ = talkHotkey.register(paused ? nil : talkShortcut)
     }
 
     func refresh() {

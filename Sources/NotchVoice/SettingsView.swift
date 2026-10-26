@@ -131,7 +131,7 @@ struct SettingsView: View {
                         title: "Talk shortcut",
                         shortcut: preferences.talkShortcut,
                         setShortcut: preferences.setTalkShortcut,
-                        pauseShortcut: preferences.pauseTalkShortcut
+                        pauseShortcut: preferences.pauseShortcuts
                     )
                     Picker("Talk shortcut works by", selection: talkMode) {
                         Text("Holding it down").tag(TalkMode.hold)
@@ -148,7 +148,7 @@ struct SettingsView: View {
                         title: "Mute shortcut",
                         shortcut: preferences.muteShortcut,
                         setShortcut: preferences.setMuteShortcut,
-                        pauseShortcut: preferences.pauseMuteShortcut
+                        pauseShortcut: preferences.pauseShortcuts
                     )
                     Toggle("Open at Login", isOn: opensAtLogin)
                 }

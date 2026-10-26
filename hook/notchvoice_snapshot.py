@@ -42,8 +42,9 @@ PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 HANDOFF_DIR = os.path.join(status_files.NOTCHVOICE_DIR, "handoffs")
 # Messages for the orchestrator from outside Claude Code, one file each, read and removed by its `wait`.
 INBOX_DIR = os.path.join(status_files.NOTCHVOICE_DIR, "inbox")
-# Acting on an old instruction is worse than missing it, so messages left this long are dropped unread.
-INBOX_MAX_AGE = 10 * 60
+# Acting on an old instruction is worse than missing it, so messages left this long are dropped unread. Younger ones
+# carry their age, and the orchestrator says when it answers late.
+INBOX_MAX_AGE = 60 * 60
 MESSAGE_LIMIT = 4000
 TAIL_BYTES = 3 * 1024 * 1024
 STUCK_SECONDS = 30 * 60
@@ -427,6 +428,8 @@ def changes(before, now):
 
 
 def tell(args):
+    if os.environ.get("CLAUDECODE"):
+        raise SystemExit("Claude Code sessions can't send the orchestrator messages as the user.")
     text = (" ".join(args.text) if args.text else sys.stdin.read()).strip()
     if not text:
         raise SystemExit("There is nothing to send.")

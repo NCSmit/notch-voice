@@ -6,7 +6,7 @@ private let log = Logger(subsystem: "local.notchvoice", category: "talk")
 
 /// Lets the user talk to the orchestrator without its window: by saying "Hey Jarvis", or with the talk shortcut,
 /// held down or pressed. The words are recognised on this Mac and sent through the orchestrator's inbox with
-/// `notchvoice_snapshot.py tell`, so the orchestrator answers out loud.
+/// `notchvoice_snapshot.py tell`, so the orchestrator answers out loud. None of it works while NotchVoice is off.
 @MainActor
 final class TalkController: ObservableObject {
     /// What the notch shows while the user talks, and just after.
@@ -20,18 +20,25 @@ final class TalkController: ObservableObject {
     @Published private(set) var card: Card?
 
     private enum Phase: Equatable {
-        case off, waitingForPhrase, capturing(TalkPolicy.Trigger), finishing
+        case off, waitingForPhrase, capturing(TalkPolicy.Trigger), finishing(TalkPolicy.Trigger)
     }
 
     private static let helper = URL.homeDirectory.appending(path: ".claude/hooks/notchvoice_snapshot.py")
     // A request that waits for the wake phrase is replaced well before Apple's limit of about a minute.
     private static let freshRequestAfter: TimeInterval = 45
+    // A request that ends this soon without hearing anything has failed, and the next one probably will too.
+    private static let quickFailure: TimeInterval = 2
+    // How long to wait before trying again to listen for the wake phrase, after the microphone couldn't start.
+    private static let restartAfter: TimeInterval = 15
 
     private let speech = SpeechInput()
     private let preferences: Preferences
     private let dictation: DictationMonitor
     private var phase = Phase.off
+    // Published values arrive before the properties change, so the latest of each is kept here.
+    private var listens = false
     private var hasOrchestrator = false
+    private var isOn = true
     private var isShortcutHeld = false
     // A capture is on its way (waiting for permission or the microphone), so presses don't start a second one.
     private var isStarting = false
@@ -46,20 +53,27 @@ final class TalkController: ObservableObject {
     private var ticker: Timer?
     private var freshening: Timer?
     private var cardTimer: Timer?
-    private var finalText: ((String) -> Void)?
+    private var fallback: Timer?
     private var changes: AnyCancellable?
 
-    init(sessions: SessionStore, preferences: Preferences, dictation: DictationMonitor) {
+    init(sessions: SessionStore, voice: VoiceController, preferences: Preferences, dictation: DictationMonitor) {
         self.preferences = preferences
         self.dictation = dictation
         speech.onText = { [weak self] text, isFinal in self?.heard(text, isFinal: isFinal) }
         speech.onEnded = { [weak self] failed in self?.requestEnded(failed: failed) }
-        changes = preferences.$listensForWakePhrase
-            .combineLatest(sessions.$sessions.map { $0.contains(where: \.isOrchestrator) }.removeDuplicates())
-            .sink { [weak self] listens, hasOrchestrator in
-                MainActor.assumeIsolated { self?.update(listens: listens, hasOrchestrator: hasOrchestrator) }
-            }
+        changes = Publishers.CombineLatest3(
+            preferences.$listensForWakePhrase,
+            sessions.$sessions.map { $0.contains(where: \.isOrchestrator) }.removeDuplicates(),
+            voice.$isEnabled.removeDuplicates()
+        )
+        .sink { [weak self] listens, hasOrchestrator, isOn in
+            MainActor.assumeIsolated { self?.update(listens: listens, hasOrchestrator: hasOrchestrator, isOn: isOn) }
+        }
     }
+
+    /// Listening for the wake phrase only runs while it is turned on, NotchVoice is on, and there is an orchestrator
+    /// to talk to, so the microphone isn't on for nothing.
+    private var isWanted: Bool { listens && hasOrchestrator && isOn }
 
     // MARK: Starting
 
@@ -89,19 +103,23 @@ final class TalkController: ObservableObject {
         NSSound(named: "Pop")?.play()
     }
 
-    /// Listening for the wake phrase only runs while it is turned on and there is an orchestrator to talk to, so the
-    /// microphone isn't on for nothing.
-    private func update(listens: Bool, hasOrchestrator: Bool) {
+    private func update(listens: Bool, hasOrchestrator: Bool, isOn: Bool) {
+        self.listens = listens
         self.hasOrchestrator = hasOrchestrator
-        let wanted = listens && hasOrchestrator
+        self.isOn = isOn
         switch phase {
-        case .off where wanted:
+        case .off where isWanted:
             Task { await self.beginWaiting() }
-        case .waitingForPhrase where !wanted:
-            phase = .off
-            freshening?.invalidate()
-            freshening = nil
-            speech.stop()
+        case .off:
+            retry?.invalidate()
+            retry = nil
+        case .waitingForPhrase where !isWanted:
+            stopListening()
+        case .capturing, .finishing:
+            guard !isOn else { break }
+            log.info("message not sent: NotchVoice was turned off")
+            endCapture()
+            show(.done(message: "NotchVoice is off", isError: false), for: 1.5)
         default:
             break
         }
@@ -109,16 +127,42 @@ final class TalkController: ObservableObject {
 
     private func beginWaiting() async {
         // Nobody asked just now, so a missing permission is only logged rather than shown each time this runs.
-        guard await ensureListening(quietly: true) else { return }
+        let listening = await ensureListening(quietly: true)
         guard phase == .off else { return }
+        guard isWanted else {
+            // Turned off, or the orchestrator closed, while permission was being asked for.
+            if listening, !isStarting { speech.stop() }
+            return
+        }
+        guard listening else { return startWaitingLater() }
         phase = .waitingForPhrase
         freshRequest()
         log.info("waiting for \(TalkPhrases.wakePhrase(self.preferences.wakeName), privacy: .public)")
     }
 
+    /// Tries again later to listen for the wake phrase: the recognizer may not be ready yet at login, permission may
+    /// be given later in System Settings, or a microphone that was plugged in may be ready by then.
+    private func startWaitingLater() {
+        retryLater(after: Self.restartAfter) { controller in
+            guard controller.phase == .off, controller.isWanted else { return }
+            Task { await controller.beginWaiting() }
+        }
+    }
+
+    private func stopListening() {
+        phase = .off
+        retry?.invalidate()
+        retry = nil
+        freshening?.invalidate()
+        freshening = nil
+        speech.stop()
+    }
+
     private func start(_ trigger: TalkPolicy.Trigger) {
-        guard hasOrchestrator else {
-            show(.done(message: "No orchestrator is open. Type /orchestrator in a Claude Code session first.", isError: true), for: 4)
+        let problem = !isOn ? "NotchVoice is off. Turn it on to talk."
+            : !hasOrchestrator ? "No orchestrator is open. Type /orchestrator in a Claude Code session first." : nil
+        if let problem {
+            show(.done(message: problem, isError: true), for: 4)
             NSSound(named: "Basso")?.play()
             return
         }
@@ -126,6 +170,11 @@ final class TalkController: ObservableObject {
         Task {
             defer { isStarting = false }
             guard await ensureListening(quietly: false) else { return }
+            // A "Hey Jarvis" message may have started, or NotchVoice been turned off, while the microphone started.
+            guard isOn, phase == .off || phase == .waitingForPhrase else {
+                if phase == .off { speech.stop() }
+                return
+            }
             if trigger != .phrase { freshRequest() }
             beginCapture(trigger)
             // The keys may have been let go while the microphone was starting.
@@ -183,23 +232,13 @@ final class TalkController: ObservableObject {
         case .waitingForPhrase:
             if let words = TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) { beginCapture(.phrase, words: words) }
         case .capturing(let trigger):
-            let latest = trigger == .phrase && carried.isEmpty ? TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) : text
-            guard let latest else { break }
-            let words = Self.joined(carried, latest)
-            if words != heard {
-                heard = words
-                lastWords = Date()
-                showListening()
-            }
-        case .finishing:
-            let latest = carried.isEmpty ? TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) ?? text : text
-            let words = Self.joined(carried, latest)
-            if isFinal, let finalText {
-                self.finalText = nil
-                finalText(words)
-            } else {
-                heard = words
-            }
+            guard let words = messageWords(in: text, trigger), words != heard else { break }
+            heard = words
+            lastWords = Date()
+            showListening()
+        case .finishing(let trigger):
+            let words = messageWords(in: text, trigger) ?? heard
+            if isFinal { deliver(words) } else { heard = words }
         case .off:
             break
         }
@@ -222,28 +261,36 @@ final class TalkController: ObservableObject {
         }
     }
 
+    /// The message so far, from the current request's transcript. A "Hey Jarvis" message starts in a request that
+    /// also heard what was said before the phrase, so only what follows it counts, and nil means the phrase is gone
+    /// from the transcript.
+    private func messageWords(in text: String, _ trigger: TalkPolicy.Trigger) -> String? {
+        guard trigger == .phrase, carried.isEmpty else { return Self.joined(carried, text) }
+        return TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName)
+    }
+
     /// Lets the recognizer settle on its final transcript, then sends it. The partial transcript stands in if the
     /// final one is slow.
     private func finish() {
-        guard case .capturing = phase else { return }
-        phase = .finishing
+        guard case .capturing(let trigger) = phase else { return }
+        phase = .finishing(trigger)
         ticker?.invalidate()
         ticker = nil
-        var delivered = false
-        let deliver: (String) -> Void = { [weak self] words in
-            guard let self, !delivered else { return }
-            delivered = true
-            self.send(words)
-        }
-        finalText = deliver
         speech.finishRequest()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        let fallback = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.phase == .finishing else { return }
-                self.finalText = nil
-                deliver(self.heard)
+                guard let self else { return }
+                self.deliver(self.heard)
             }
         }
+        RunLoop.main.add(fallback, forMode: .common)
+        self.fallback = fallback
+    }
+
+    /// Sends the message being finished, once.
+    private func deliver(_ words: String) {
+        guard case .finishing = phase else { return }
+        send(words)
     }
 
     private func send(_ words: String) {
@@ -273,28 +320,32 @@ final class TalkController: ObservableObject {
     private func endCapture() {
         ticker?.invalidate()
         ticker = nil
-        finalText = nil
+        fallback?.invalidate()
+        fallback = nil
         heard = ""
         carried = ""
         dictation.hold(false)
-        if preferences.listensForWakePhrase && hasOrchestrator {
+        if isWanted {
             phase = .waitingForPhrase
             freshRequest()
         } else {
-            phase = .off
-            freshening?.invalidate()
-            freshening = nil
-            speech.stop()
+            stopListening()
         }
     }
 
     private func freshRequest() {
         retry?.invalidate()
         retry = nil
-        requestStarted = Date()
-        speech.newRequest()
         freshening?.invalidate()
         freshening = nil
+        if phase == .waitingForPhrase, !speech.isRunning {
+            // The microphone stopped and couldn't start again, as can happen when one is plugged in or out.
+            log.info("the microphone stopped; trying again in \(Self.restartAfter) s")
+            phase = .off
+            return startWaitingLater()
+        }
+        requestStarted = Date()
+        speech.newRequest()
         guard phase == .waitingForPhrase else { return }
         let timer = Timer(timeInterval: Self.freshRequestAfter, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -311,35 +362,42 @@ final class TalkController: ObservableObject {
         case .waitingForPhrase:
             // A request that fails straight away without hearing anything will keep failing, so wait longer before
             // each new one.
-            if failed, Date().timeIntervalSince(requestStarted) < 2 {
+            if failed, Date().timeIntervalSince(requestStarted) < Self.quickFailure {
                 retryDelay = min(max(retryDelay * 2, 1), 30)
                 log.info("speech recognition stopped at once; trying again in \(self.retryDelay) s")
-                retry?.invalidate()
-                let timer = Timer(timeInterval: retryDelay, repeats: false) { [weak self] _ in
-                    MainActor.assumeIsolated {
-                        guard let self, self.phase == .waitingForPhrase else { return }
-                        self.freshRequest()
-                    }
+                retryLater(after: retryDelay) { controller in
+                    guard controller.phase == .waitingForPhrase else { return }
+                    controller.freshRequest()
                 }
-                RunLoop.main.add(timer, forMode: .common)
-                retry = timer
             } else {
                 retryDelay = 0
                 freshRequest()
             }
         case .capturing:
+            // Recognition isn't working, so the message ends with what was heard rather than starting request after
+            // request that fails.
+            if failed, Date().timeIntervalSince(requestStarted) < Self.quickFailure { return send(heard) }
             // The recognizer ended this request while the user is still talking, so carry on in a new one.
             carried = heard
             requestStarted = Date()
             speech.newRequest()
         case .finishing:
-            if let finalText {
-                self.finalText = nil
-                finalText(heard)
-            }
+            deliver(heard)
         case .off:
             break
         }
+    }
+
+    private func retryLater(after delay: TimeInterval, _ action: @escaping @MainActor (TalkController) -> Void) {
+        retry?.invalidate()
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                action(self)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        retry = timer
     }
 
     // MARK: Sending
@@ -353,6 +411,10 @@ final class TalkController: ObservableObject {
             // The message goes in as an argument, not through a pipe, which would end the app if the helper quit
             // before reading it.
             process.arguments = ["python3", "-I", helper.path, "tell", "--source", "voice", "--", message]
+            // NotchVoice inherits the environment of whatever opened it, and the helper refuses Claude Code sessions.
+            var environment = ProcessInfo.processInfo.environment
+            environment.removeValue(forKey: "CLAUDECODE")
+            process.environment = environment
             let errors = Pipe()
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice

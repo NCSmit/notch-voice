@@ -33,7 +33,8 @@ struct TalkPhraseTests {
     }
 
     @Test func aMessageCanBeCancelledOrEmpty() {
-        #expect(TalkPhrases.message(from: " which session needs me? ") == "which session needs me")
+        #expect(TalkPhrases.message(from: ", which session needs me? ") == "which session needs me?")
+        #expect(TalkPhrases.message(from: " .!") == nil)
         #expect(TalkPhrases.message(from: "Cancel.") == nil)
         #expect(TalkPhrases.message(from: "run the tests, never mind") == nil)
         #expect(TalkPhrases.message(from: "   ") == nil)

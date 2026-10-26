@@ -29,9 +29,10 @@ enum TalkPhrases {
     }
 
     /// The message to send, or nil when there is nothing to send: nothing was said, or it ended with a cancel word.
+    /// A comma left over from "Hey Jarvis," goes, but the end keeps its punctuation, so a question stays one.
     static func message(from words: String) -> String? {
-        let text = words.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        guard !text.isEmpty else { return nil }
+        let text = words.drop(while: { $0.isWhitespace || $0.isPunctuation }).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
         let plain = text.lowercased().replacing(/[^\w\s]/, with: "")
         if cancelWords.contains(where: { plain == $0 || plain.hasSuffix(" " + $0) }) { return nil }
         return text

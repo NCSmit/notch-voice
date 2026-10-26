@@ -30,9 +30,11 @@ final class SpeechInput {
     private var generation = 0
     private var configChanges: NSObjectProtocol?
 
-    static func authorize() async -> Bool {
-        let speech = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
+    // These callbacks come on background threads, so none of them may be tied to the main actor; Swift stops the app
+    // when a main-actor closure runs anywhere else.
+    nonisolated static func authorize() async -> Bool {
+        let speech = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            SFSpeechRecognizer.requestAuthorization { @Sendable status in continuation.resume(returning: status == .authorized) }
         }
         let microphone = await AVCaptureDevice.requestAccess(for: .audio)
         return speech && microphone
@@ -50,7 +52,7 @@ final class SpeechInput {
         let input = engine.inputNode
         input.removeTap(onBus: 0)
         let feed = self.feed
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in feed.append(buffer) }
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { @Sendable buffer, _ in feed.append(buffer) }
         engine.prepare()
         do {
             try engine.start()
@@ -98,7 +100,7 @@ final class SpeechInput {
         request.addsPunctuation = true
         request.taskHint = .dictation
         feed.set(request)
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+        task = recognizer.recognitionTask(with: request) { @Sendable [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
             let ended = isFinal || error != nil

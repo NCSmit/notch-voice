@@ -93,6 +93,7 @@ Type `/orchestrator` in any Claude Code session to make it your orchestrator, th
 - **Passes your instructions on.** Say "tell the login session to run the tests", and it sends the message to that session. Where Claude Code can't message other sessions, it gives you the text to paste instead. It asks before passing on anything that changes a session's direction.
 - **Keeps context healthy.** When a long session's context is nearly full, it asks that session to save its working state first. After the next compaction, NotchVoice hands that state back to the session, so nothing gets lost.
 - **Knows your pull requests.** It tells you how each session's pull request is doing: checks passing or failing, changes requested, merged. For sessions in the Claude desktop app it asks the app, which already keeps track. For other sessions it asks GitHub with the `gh` command, once per session and only while it briefs you.
+- **Takes messages from anywhere.** Anything that can run a command can talk to the orchestrator without its window, for example a Shortcut you start with Siri: `python3 ~/.claude/hooks/notchvoice_snapshot.py tell "Which session needs me?"`. The orchestrator answers out loud.
 - **Learns how you work.** On request, it looks through your recent prompts for corrections you keep making, and suggests notes for Claude's memory. You can say no to any of them.
 
 The orchestrator reads your sessions' transcripts the way any Claude Code session can. Its helper redacts obvious secrets, such as API keys, before passing anything on.
@@ -184,6 +185,7 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `$TMPDIR/notchvoice_dictating` | The app | Kept fresh while a dictation app uses the microphone. The Stop hook holds new replies back and pauses the one speaking while it's fresh, and treats it as gone once it's 5 seconds old, so speech never stays stuck if the app quits. |
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
 | `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |
+| `~/.claude/notchvoice/inbox/<time>.json` | `notchvoice_snapshot.py tell` | A message for the orchestrator. Its watcher reads and removes each one, and drops any older than 10 minutes, since acting on a stale instruction is worse than missing it. |
 | `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The handoff hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
 
 `$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.

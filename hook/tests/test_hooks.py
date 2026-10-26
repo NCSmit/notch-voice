@@ -666,11 +666,71 @@ class SnapshotTests(unittest.TestCase):
         with mock.patch.object(snapshot, "open_sessions", side_effect=lambda skip, check_name: next(rounds)), \
                 mock.patch.object(snapshot.time, "sleep"), redirect_stdout(io.StringIO()) as out:
             snapshot.wait(mock.Mock(session="me", timeout=60))
-        self.assertEqual([(e["session_id"], e["state"]) for e in json.loads(out.getvalue())], [("a", "idle"), ("b", "waiting")])
+        woke = json.loads(out.getvalue())
+        self.assertEqual([(e["session_id"], e["state"]) for e in woke["sessions"]], [("a", "idle"), ("b", "waiting")])
+        self.assertEqual(woke["user_said"], [])
         with mock.patch.object(snapshot, "open_sessions", return_value={}), mock.patch.object(snapshot.time, "sleep"), \
                 redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
             snapshot.wait(mock.Mock(session="me", timeout=0.01))
         self.assertEqual(stop.exception.code, 2)
+
+
+class InboxTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for module, name, value in ((snapshot, "INBOX_DIR", os.path.join(self.dir.name, "inbox")),
+                                    (sessions, "ORCHESTRATOR_FILE", os.path.join(self.dir.name, "orchestrator.json"))):
+            patcher = mock.patch.object(module, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def send(self, text, boss="boss"):
+        with mock.patch.object(sessions, "orchestrator", return_value=boss), redirect_stdout(io.StringIO()):
+            snapshot.tell(argparse.Namespace(text=[text], source="siri"))
+
+    def test_a_message_needs_an_open_orchestrator(self):
+        with self.assertRaises(SystemExit) as refused:
+            self.send("What needs me?", boss=None)
+        self.assertIn("No orchestrator is open", str(refused.exception))
+        self.assertFalse(os.path.exists(snapshot.INBOX_DIR))
+        with self.assertRaises(SystemExit):
+            self.send("   ")
+
+    def test_messages_are_private_and_read_once_in_order(self):
+        self.send("First")
+        time.sleep(0.002)
+        with mock.patch.object(sessions, "orchestrator", return_value="boss"), \
+                mock.patch.object(sys, "stdin", io.StringIO("Second, from stdin\n")), redirect_stdout(io.StringIO()):
+            snapshot.tell(argparse.Namespace(text=[], source="keyboard"))
+        files = os.listdir(snapshot.INBOX_DIR)
+        self.assertEqual(len(files), 2)
+        self.assertEqual(oct(os.stat(snapshot.INBOX_DIR).st_mode & 0o777), "0o700")
+        self.assertEqual({oct(os.stat(os.path.join(snapshot.INBOX_DIR, f)).st_mode & 0o777) for f in files}, {"0o600"})
+        said = snapshot.take_messages()
+        self.assertEqual([(m["text"], m["from"]) for m in said], [("First", "siri"), ("Second, from stdin", "keyboard")])
+        self.assertEqual(snapshot.take_messages(), [])
+
+    def test_old_and_broken_messages_are_dropped_unread(self):
+        self.send("Too late")
+        self.assertEqual(snapshot.take_messages(now=time.time() + snapshot.INBOX_MAX_AGE + 1), [])
+        os.makedirs(snapshot.INBOX_DIR, exist_ok=True)
+        with open(os.path.join(snapshot.INBOX_DIR, "1.json"), "w") as f:
+            f.write("not json")
+        self.assertEqual(snapshot.take_messages(), [])
+        self.assertEqual(os.listdir(snapshot.INBOX_DIR), [])
+
+    def test_the_orchestrator_wakes_for_a_message_and_no_one_else_takes_it(self):
+        self.send("Which session needs me?")
+        with open(sessions.ORCHESTRATOR_FILE, "w") as f:
+            json.dump({"session_id": "boss"}, f)
+        with mock.patch.object(snapshot, "open_sessions", return_value={}), mock.patch.object(snapshot.time, "sleep"), \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            snapshot.wait(mock.Mock(session="other", timeout=0.01))
+        self.assertEqual(len(os.listdir(snapshot.INBOX_DIR)), 1)
+        with mock.patch.object(snapshot, "open_sessions", return_value={}), redirect_stdout(io.StringIO()) as out:
+            snapshot.wait(mock.Mock(session="boss", timeout=60))
+        self.assertEqual([m["text"] for m in json.loads(out.getvalue())["user_said"]], ["Which session needs me?"])
 
 
 class PullRequestTests(unittest.TestCase):

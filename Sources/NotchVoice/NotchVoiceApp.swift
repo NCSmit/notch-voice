@@ -44,7 +44,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: { [weak self] in self?.talk?.shortcutPressed() },
             release: { [weak self] in self?.talk?.shortcutReleased() }
         )
-        let preferences = Preferences(muteHotkey: muteHotkey, talkHotkey: talkHotkey)
+        let skipHotkey = Hotkey { voice.skip(all: false) }
+        let preferences = Preferences(muteHotkey: muteHotkey, talkHotkey: talkHotkey, skipHotkey: skipHotkey)
         let dictation = DictationMonitor()
         dictationChanges = dictation.$isDictating.sink { dictating in
             MainActor.assumeIsolated { voice.setDictating(dictating) }

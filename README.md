@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/hero.png" alt="The NotchVoice panel open under a MacBook notch while Claude Code speaks, with a violet and orange glow around it" width="820">
+<img src="docs/hero.png" alt="The NotchVoice panel open under a MacBook notch while Claude Code speaks, with a skip button and a violet and orange glow around it" width="820">
 
 # NotchVoice
 
@@ -22,7 +22,7 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 - **A notch that glows.** A soft, shifting glow surrounds the notch while Claude talks.
 - **Short spoken replies.** While voice replies are on, Claude is reminded with every prompt to answer in a few sentences, so replies are quick to listen to.
 - **Never talks over you.** While you dictate with Wispr Flow, a reply that's speaking pauses and picks up where it left off when you stop. New replies wait until you're done.
-- **Replies take turns.** When several sessions finish at once, their replies are read one after another, oldest first, instead of cutting each other off.
+- **Replies take turns.** When several sessions finish at once, their replies are read one after another, oldest first, instead of cutting each other off. Skip the one playing with the button in the notch or a keyboard shortcut, or Option-click the button to skip every reply waiting too.
 - **Music steps aside.** Spotify and Apple Music get quieter while Claude speaks, then return to the volume they were at.
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off, or set a keyboard shortcut for it. Turning them off mid-sentence stops the speech straight away.
 - **Permissions in the notch.** When Claude asks to run a command or edit a file, the notch shows the request with Allow and Deny.
@@ -144,7 +144,7 @@ This works in the Claude desktop app only. The claude.ai website and the mobile 
 Click the cog in the notch to open settings. Changes apply to the next reply, with no restart needed.
 
 <p align="center">
-  <img src="docs/settings.png" alt="The NotchVoice settings window with voice, speed, short replies, music volume, glow theme, permission and mute shortcut settings" width="470">
+  <img src="docs/settings.png" alt="The NotchVoice settings window with voice, speed, short replies, music volume, glow theme, permission, sessions, talk to the orchestrator, and mute and skip shortcut settings" width="470">
 </p>
 
 - **Voice.** By default NotchVoice uses your Mac's own spoken content voice, and the menu shows its name, for example "Siri Voice 1 (System)". **Change System Voice…** opens the Spoken Content page in System Settings, where that voice is chosen. You can also choose any other installed macOS voice, and you hear a short sample as soon as you pick one.
@@ -156,6 +156,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Sessions.** Show or hide your sessions in the menu bar.
 - **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, set the talk shortcut and whether you hold or press it, choose how long a pause sends a message (1 to 5 seconds, 2.5 by default), and choose whether your Mac or Wispr Flow writes out your messages.
 - **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
+- **Skip shortcut.** Set a keyboard shortcut that skips the reply being read aloud.
 
 <p align="center">
   <img src="docs/themes.png" alt="The six glow themes around a notch: Aurora, Ember, Ocean, Mint, Neon and Moonlight" width="820">
@@ -213,6 +214,7 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `$TMPDIR/claude_tts_owner` | The hook | Holds `<hook pid> <say pid>` while a reply is spoken. The glow follows this file. |
 | `$TMPDIR/claude_tts_session` | The hook | Holds `<hook pid> <session id>` while a reply is spoken, so the menu can mark that session. The app only trusts it while the hook pid matches the owner file. |
 | `$TMPDIR/claude_tts_queue/` | The hook | One ticket per reply that is waiting or speaking, locked by its hook while it runs, so replies take turns, oldest first. A voice sample from settings goes ahead of them and stops the one speaking. |
+| `$TMPDIR/notchvoice_skip_before` | The app | Written by **Skip Every Reply**: the time, in nanoseconds, before which replies waiting in the queue stay quiet. |
 | `$TMPDIR/notchvoice_dictating` | The app | Kept fresh while a dictation app uses the microphone. The Stop hook holds new replies back and pauses the one speaking while it's fresh, and treats it as gone once it's 5 seconds old, so speech never stays stuck if the app quits. |
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
 | `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |

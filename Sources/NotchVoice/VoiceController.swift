@@ -26,6 +26,9 @@ final class VoiceController: ObservableObject {
     // "<hook pid> <session_id>" of the reply being spoken, written by the hook next to the owner file.
     private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
+    // Written by "skip all": speak.py keeps quiet any reply that joined its queue before this time, in nanoseconds
+    // since 1970.
+    private let skipFile = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice_skip_before")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
     // The hook whose session speakingSession was read for, so the file is read once per reply.
@@ -47,6 +50,21 @@ final class VoiceController: ObservableObject {
             FileManager.default.createFile(atPath: muteFile.path, contents: nil)
         }
         refresh()
+    }
+
+    /// Stops the reply being read aloud, so the next one in the queue starts. With `all`, the replies waiting in the
+    /// queue stay quiet too.
+    func skip(all: Bool) {
+        if all {
+            let now = UInt64(Date().timeIntervalSince1970 * 1_000_000_000)
+            try? String(now).write(to: skipFile, atomically: true, encoding: .utf8)
+        }
+        if let sayPid = ownerPids().dropFirst().first, Processes.name(of: sayPid) == "say" {
+            stop(sayPid)
+            log.info("skipped \(all ? "every reply" : "the reply", privacy: .public)")
+        } else if all {
+            log.info("skipped every reply waiting")
+        }
     }
 
     func setVoice(_ id: String?) {
@@ -114,10 +132,7 @@ final class VoiceController: ObservableObject {
         let sayPid = pids.dropFirst().first.flatMap { Processes.name(of: $0) == "say" ? $0 : nil }
         let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
         if let sayPid, !enabled, !isSample {
-            // Stopping only `say` lets the hook finish normally, and it restores the music volume itself. A `say` paused
-            // for dictation only acts on SIGTERM once it is continued.
-            kill(sayPid, SIGTERM)
-            kill(sayPid, SIGCONT)
+            stop(sayPid)
             log.info("stopped say \(sayPid) because voice replies are off")
         }
         if isEnabled != enabled { isEnabled = enabled }
@@ -153,6 +168,13 @@ final class VoiceController: ObservableObject {
         let fields = text.split(whereSeparator: \.isWhitespace)
         guard fields.count == 2, pid_t(fields[0]) == owner else { return nil }
         return String(fields[1])
+    }
+
+    /// Stopping only `say` lets the hook finish normally, so it restores the music volume itself and the next reply in
+    /// the queue can start. A `say` paused for dictation only acts on SIGTERM once it is continued.
+    private func stop(_ say: pid_t) {
+        kill(say, SIGTERM)
+        kill(say, SIGCONT)
     }
 
     private func ownerPids() -> [pid_t] {

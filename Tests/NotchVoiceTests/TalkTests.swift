@@ -165,3 +165,15 @@ struct RequestTranscriptTests {
         #expect(transcript.words.map(\.start) == [8.3, 8.5])
     }
 }
+
+struct ShortcutClashTests {
+    @Test func twoShortcutsCantShareKeys() {
+        let mute = Shortcut(keyCode: 46, modifiers: 2048 | 256)
+        let skip = Shortcut(keyCode: 1, modifiers: 2048 | 256)
+        let all: [Shortcut?] = [mute, nil, skip]
+        #expect(Preferences.isTaken(mute, besides: skip, among: all))
+        #expect(!Preferences.isTaken(mute, besides: mute, among: all))
+        #expect(!Preferences.isTaken(Shortcut(keyCode: 2, modifiers: 2048), besides: nil, among: all))
+        #expect(!Preferences.isTaken(nil, besides: skip, among: all))
+    }
+}

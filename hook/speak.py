@@ -57,6 +57,8 @@ QUEUE_DIR = os.path.join(user_temp_dir(), "claude_tts_queue")
 # dropped as stale. One still paused at DEADLINE is dropped too, so `say` is never left stopped when the hook is ended.
 WAIT_LIMIT = 280
 DEADLINE = 580
+# NotchVoice's "skip every reply" writes the time, in nanoseconds since 1970, before which queued replies stay quiet.
+SKIP_FILE = os.path.join(user_temp_dir(), "notchvoice_skip_before")
 # A reply that is only this mark has nothing to say, so the orchestrator can end a quiet turn without being read aloud.
 SILENT_MARK = "\u2014"
 
@@ -223,6 +225,16 @@ def others_in_queue(ticket, ahead_only=False):
             if name != mine and (name < mine or not ahead_only) and is_held(os.path.join(QUEUE_DIR, name))]
 
 
+def skipped(ticket):
+    """Whether the user skipped every reply after this one joined the queue."""
+    try:
+        with open(SKIP_FILE) as f:
+            before = int(f.read().strip())
+        return int(os.path.basename(ticket[0]).split("-")[1]) <= before
+    except (OSError, ValueError, IndexError):
+        return False
+
+
 def wait_for_turn(ticket, started):
     while others_in_queue(ticket, ahead_only=True):
         if time.time() - started > WAIT_LIMIT:
@@ -372,11 +384,11 @@ def main():
         if not sample and (os.path.exists(MUTE_FILE) or silenced(payload)):
             return
         write_session(payload.get("session_id"))
-        if not wait_while_dictating(started):
+        if not wait_while_dictating(started) or skipped(ticket):
             return
         duck_music(music_level(settings))
-        if not is_owner():
-            return  # A voice sample took over.
+        if not is_owner() or skipped(ticket):
+            return  # A voice sample took over, or the user skipped every reply while the music turned down.
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
         write_owner(os.getpid(), proc.pid)
         play(proc, text, started)

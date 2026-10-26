@@ -21,6 +21,7 @@ struct NotchRootView: View {
             pendingCount: state.pendingCount,
             talk: state.talk,
             setEnabled: voice.setEnabled,
+            skip: voice.skip,
             answer: answer,
             cancelTalk: cancelTalk,
             openSettings: openSettings
@@ -39,6 +40,7 @@ struct NotchView: View {
     let pendingCount: Int
     let talk: TalkController.Card?
     let setEnabled: @MainActor (Bool) -> Void
+    let skip: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
     let cancelTalk: @MainActor () -> Void
     let openSettings: @MainActor () -> Void
@@ -82,6 +84,7 @@ struct NotchView: View {
                     isSpeaking: isSpeaking,
                     accent: theme.accent,
                     setEnabled: setEnabled,
+                    skip: skip,
                     openSettings: openSettings
                 )
                 .padding(.top, metrics.notch.height)
@@ -170,6 +173,7 @@ struct VoicePanel: View {
     let isSpeaking: Bool
     let accent: LinearGradient
     let setEnabled: @MainActor (Bool) -> Void
+    let skip: @MainActor (Bool) -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
@@ -195,6 +199,23 @@ struct VoicePanel: View {
             .onTapGesture { setEnabled(!isEnabled) }
             .accessibilityElement(children: .combine)
 
+            if isSpeaking {
+                Button {
+                    skip(NSEvent.modifierFlags.contains(.option))
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.white.opacity(0.12)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Skip this reply. Option-click to skip every reply waiting too.")
+                .accessibilityLabel("Skip this reply")
+                .accessibilityAction(named: "Skip every reply") { skip(true) }
+            }
+
             Button(action: openSettings) {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 13, weight: .semibold))
@@ -218,6 +239,11 @@ struct VoicePanel: View {
         .padding(.horizontal, 22)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contextMenu {
+            if isSpeaking {
+                Button("Skip This Reply") { skip(false) }
+                Button("Skip Every Reply") { skip(true) }
+                Divider()
+            }
             Button("Settings…") { openSettings() }
             Divider()
             Button("Quit NotchVoice") { NSApp.terminate(nil) }

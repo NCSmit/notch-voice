@@ -31,6 +31,7 @@ final class Preferences: ObservableObject {
     private static let wakeNameKey = "wakeName"
     static let defaultWakeName = "Jarvis"
     private static let talkShortcutKey = "talkShortcut"
+    private static let skipShortcutKey = "skipShortcut"
     private static let talkModeKey = "talkMode"
     private static let transcriberKey = "transcriber"
     private static let pauseKey = "pauseBeforeSending"
@@ -44,6 +45,7 @@ final class Preferences: ObservableObject {
     /// The name in the wake phrase, "Hey <name>".
     @Published private(set) var wakeName: String
     @Published private(set) var talkShortcut: Shortcut?
+    @Published private(set) var skipShortcut: Shortcut?
     @Published private(set) var talkMode: TalkMode
     @Published private(set) var transcriber: Transcriber
     /// How long a pause sends a message said after "Hey Jarvis", or started by pressing the talk shortcut.
@@ -52,8 +54,9 @@ final class Preferences: ObservableObject {
     @Published private(set) var hasWisprFlow: Bool
     private let muteHotkey: Hotkey
     private let talkHotkey: Hotkey
+    private let skipHotkey: Hotkey
 
-    init(muteHotkey: Hotkey, talkHotkey: Hotkey) {
+    init(muteHotkey: Hotkey, talkHotkey: Hotkey, skipHotkey: Hotkey) {
         theme = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(GlowTheme.init(rawValue:)) ?? .aurora
         opensAtLogin = LoginItem.isEnabled
         asksForPermission = UserDefaults.standard.object(forKey: Self.permissionsKey) as? Bool ?? true
@@ -66,8 +69,10 @@ final class Preferences: ObservableObject {
         pauseBeforeSending = TalkPolicy.pause(UserDefaults.standard.object(forKey: Self.pauseKey) as? Double ?? TalkPolicy.defaultPause)
         self.muteHotkey = muteHotkey
         self.talkHotkey = talkHotkey
+        self.skipHotkey = skipHotkey
         muteShortcut = Self.savedShortcut(Self.muteShortcutKey).flatMap { muteHotkey.register($0) ? $0 : nil }
         talkShortcut = Self.savedShortcut(Self.talkShortcutKey).flatMap { talkHotkey.register($0) ? $0 : nil }
+        skipShortcut = Self.savedShortcut(Self.skipShortcutKey).flatMap { skipHotkey.register($0) ? $0 : nil }
     }
 
     func setListensForWakePhrase(_ listens: Bool) {
@@ -97,9 +102,16 @@ final class Preferences: ObservableObject {
     }
 
     func setTalkShortcut(_ shortcut: Shortcut?) -> Bool {
-        guard shortcut != muteShortcut || shortcut == nil, talkHotkey.register(shortcut) else { return false }
+        guard !isTaken(shortcut, besides: talkShortcut), talkHotkey.register(shortcut) else { return false }
         talkShortcut = shortcut
         Self.save(shortcut, Self.talkShortcutKey)
+        return true
+    }
+
+    func setSkipShortcut(_ shortcut: Shortcut?) -> Bool {
+        guard !isTaken(shortcut, besides: skipShortcut), skipHotkey.register(shortcut) else { return false }
+        skipShortcut = shortcut
+        Self.save(shortcut, Self.skipShortcutKey)
         return true
     }
 
@@ -124,7 +136,7 @@ final class Preferences: ObservableObject {
     }
 
     func setMuteShortcut(_ shortcut: Shortcut?) -> Bool {
-        guard shortcut != talkShortcut || shortcut == nil, muteHotkey.register(shortcut) else { return false }
+        guard !isTaken(shortcut, besides: muteShortcut), muteHotkey.register(shortcut) else { return false }
         muteShortcut = shortcut
         Self.save(shortcut, Self.muteShortcutKey)
         return true
@@ -135,6 +147,17 @@ final class Preferences: ObservableObject {
     func pauseShortcuts(_ paused: Bool) {
         _ = muteHotkey.register(paused ? nil : muteShortcut)
         _ = talkHotkey.register(paused ? nil : talkShortcut)
+        _ = skipHotkey.register(paused ? nil : skipShortcut)
+    }
+
+    private func isTaken(_ shortcut: Shortcut?, besides own: Shortcut?) -> Bool {
+        Self.isTaken(shortcut, besides: own, among: [muteShortcut, talkShortcut, skipShortcut])
+    }
+
+    /// Whether another of NotchVoice's own shortcuts already uses these keys. Keeping the keys it already has is fine.
+    nonisolated static func isTaken(_ shortcut: Shortcut?, besides own: Shortcut?, among shortcuts: [Shortcut?]) -> Bool {
+        guard let shortcut, shortcut != own else { return false }
+        return shortcuts.contains(shortcut)
     }
 
     func refresh() {

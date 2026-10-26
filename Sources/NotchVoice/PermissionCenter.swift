@@ -1,7 +1,4 @@
 import Foundation
-import os
-
-private let log = Logger(subsystem: "local.notchvoice", category: "permissions")
 
 enum PermissionResponse: String {
     case allow
@@ -45,7 +42,6 @@ final class PermissionCenter: ObservableObject {
     }
 
     func answer(_ id: UUID, _ response: PermissionResponse) {
-        log.info("answered in the notch: \(response.rawValue, privacy: .public)")
         connections[id]?.reply(response.rawValue)
         remove(id)
     }
@@ -57,17 +53,12 @@ final class PermissionCenter: ObservableObject {
     }
 
     private func add(_ prompt: PermissionPrompt, connection: PermissionConnection) {
-        guard isEnabled() else {
-            log.info("request handed back: permission cards are off")
-            return connection.reply(PermissionResponse.dismiss.rawValue)
-        }
+        guard isEnabled() else { return connection.reply(PermissionResponse.dismiss.rawValue) }
         connections[prompt.id] = connection
         queue.append(prompt)
-        log.info("showing a request: \(prompt.title, privacy: .public) in \(prompt.project, privacy: .public)")
     }
 
     private func remove(_ id: UUID) {
-        if connections[id] != nil { log.info("request withdrawn (answered in Claude or the hook ended)") }
         connections[id] = nil
         queue.removeAll { $0.id == id }
     }

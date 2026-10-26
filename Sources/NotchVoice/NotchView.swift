@@ -1,60 +1,35 @@
 import AppKit
 import SwiftUI
 
-enum NotchTab {
-    case sessions, prs
-}
-
 struct NotchRootView: View {
     @ObservedObject var state: NotchState
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
     let answer: @MainActor (UUID, PermissionResponse) -> Void
+    let cancelTalk: @MainActor () -> Void
     let openSettings: @MainActor () -> Void
-    let sendCapture: @MainActor () -> Void
-    let cancelCapture: @MainActor () -> Void
 
     var body: some View {
         NotchView(
-            capture: state.capture,
-            captureText: $state.captureText,
-            captureFocus: state.captureFocus,
-            sendCapture: sendCapture,
-            cancelCapture: cancelCapture,
             metrics: state.metrics,
             isOpen: state.isOpen,
             isEnabled: voice.isEnabled,
             isSpeaking: voice.isSpeaking,
-            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil || state.capture != nil,
+            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil || state.talk != nil,
             theme: preferences.theme,
             prompt: state.prompt,
             pendingCount: state.pendingCount,
-            sessions: state.sessions,
-            speakingSession: voice.isSpeaking ? voice.speakingSession : nil,
-            orchestratorID: state.orchestratorID,
-            prs: state.prs,
-            tab: state.shownTab,
-            selectTab: { tab in withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) { state.tab = tab } },
-            handsFree: state.handsFree,
-            listensOnHeadphones: state.listensOnHeadphones,
-            isOrchestratorMode: voice.isOrchestratorMode,
-            setOrchestratorMode: voice.setOrchestratorMode,
-            isPinned: preferences.isPanelPinned,
-            setPinned: preferences.setPanelPinned,
-            skip: { all in voice.skip(all: all) },
+            talk: state.talk,
             setEnabled: voice.setEnabled,
+            skip: voice.skip,
             answer: answer,
+            cancelTalk: cancelTalk,
             openSettings: openSettings
         )
     }
 }
 
 struct NotchView: View {
-    let capture: CaptureState?
-    @Binding var captureText: String
-    let captureFocus: Int
-    let sendCapture: @MainActor () -> Void
-    let cancelCapture: @MainActor () -> Void
     let metrics: NotchMetrics
     let isOpen: Bool
     let isEnabled: Bool
@@ -63,34 +38,19 @@ struct NotchView: View {
     let theme: GlowTheme
     let prompt: PermissionPrompt?
     let pendingCount: Int
-    let sessions: [ClaudeSession]
-    let speakingSession: String?
-    let orchestratorID: String?
-    let prs: [TrackedPR]
-    let tab: NotchTab
-    let selectTab: @MainActor (NotchTab) -> Void
-    let handsFree: HandsFreeController.Phase
-    let listensOnHeadphones: Bool
-    let isOrchestratorMode: Bool
-    let setOrchestratorMode: @MainActor (Bool) -> Void
-    let isPinned: Bool
-    let setPinned: @MainActor (Bool) -> Void
-    let skip: @MainActor (Bool) -> Void
+    let talk: TalkController.Card?
     let setEnabled: @MainActor (Bool) -> Void
+    let skip: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
+    let cancelTalk: @MainActor () -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
-        let isExpanded = isOpen || prompt != nil || capture != nil
-        let rows = tab == .sessions ? sessions.count : prs.count
-        let showsIndicator = handsFree != .off
-        let size = prompt != nil ? metrics.permissionSize
-            : isOpen ? metrics.openSize(rows: rows, hasTabs: !prs.isEmpty, capture: capture != nil)
-            : capture != nil ? metrics.captureSize
-            : showsIndicator ? metrics.closedSizeWithIndicator : metrics.closedSize
+        let isExpanded = isOpen || prompt != nil || talk != nil
+        let size = prompt != nil ? metrics.permissionSize : talk != nil ? metrics.talkSize : isOpen ? metrics.openSize : metrics.closedSize
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
-        let showsBody = isExpanded || isGlowing || handsFree != .off
+        let showsBody = isExpanded || isGlowing
 
         ZStack(alignment: .top) {
             NotchGlow(
@@ -103,13 +63,6 @@ struct NotchView: View {
                 .animation(showsBody ? .easeOut(duration: 0.15) : .easeIn(duration: 0.2).delay(0.3)) {
                     $0.opacity(showsBody ? 1 : 0)
                 }
-            if !isExpanded, showsIndicator {
-                HandsFreeIndicator(phase: handsFree, onHeadphones: listensOnHeadphones, accent: theme.accent)
-                    .frame(width: NotchMetrics.indicatorWidth, height: metrics.notch.height)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.trailing, NotchMetrics.closedTopRadius)
-                    .transition(.opacity)
-            }
             if let prompt {
                 PermissionCard(prompt: prompt, pendingCount: pendingCount, accent: theme.accent, answer: answer)
                     .id(prompt.id)
@@ -118,46 +71,23 @@ struct NotchView: View {
                         insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                         removal: .opacity.animation(.easeIn(duration: 0.1))
                     ))
-            } else if isOpen {
-                VStack(spacing: 0) {
-                    VoicePanel(
-                        isEnabled: isEnabled,
-                        isSpeaking: isSpeaking,
-                        isOrchestratorMode: isOrchestratorMode,
-                        hasOrchestrator: orchestratorID != nil,
-                        handsFree: handsFree,
-                        isPinned: isPinned,
-                        accent: theme.accent,
-                        setEnabled: setEnabled,
-                        setOrchestratorMode: setOrchestratorMode,
-                        setPinned: setPinned,
-                        skip: skip,
-                        openSettings: openSettings
-                    )
-                    .frame(height: NotchMetrics.voiceRowHeight)
-                    if !prs.isEmpty {
-                        NotchTabBar(tab: tab, sessionCount: sessions.count, prCount: prs.count, accent: theme.accent, select: selectTab)
-                            .frame(height: NotchMetrics.tabBarHeight)
-                    }
-                    if tab == .prs {
-                        PRList(prs: prs)
-                    } else if !sessions.isEmpty {
-                        SessionList(sessions: sessions, speakingSession: speakingSession, orchestratorID: orchestratorID, prs: prs, accent: theme.accent)
-                    }
-                    if let capture {
-                        captureField(capture)
-                    }
-                }
-                .frame(maxHeight: .infinity, alignment: .top)
-                .padding(.top, metrics.notch.height)
-                .transition(.asymmetric(
-                    insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
-                    removal: .opacity.animation(.easeIn(duration: 0.1))
-                ))
-            } else if let capture {
-                captureField(capture)
+            } else if let talk {
+                TalkCard(card: talk, accent: theme.accent, cancel: cancelTalk)
                     .padding(.top, metrics.notch.height)
-                    .frame(maxHeight: .infinity, alignment: .top)
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
+                        removal: .opacity.animation(.easeIn(duration: 0.1))
+                    ))
+            } else if isOpen {
+                VoicePanel(
+                    isEnabled: isEnabled,
+                    isSpeaking: isSpeaking,
+                    accent: theme.accent,
+                    setEnabled: setEnabled,
+                    skip: skip,
+                    openSettings: openSettings
+                )
+                .padding(.top, metrics.notch.height)
                 .transition(.asymmetric(
                     insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                     removal: .opacity.animation(.easeIn(duration: 0.1))
@@ -166,73 +96,6 @@ struct NotchView: View {
         }
         .frame(width: size.width, height: size.height)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-}
-
-extension NotchView {
-    func captureField(_ capture: CaptureState) -> some View {
-        CaptureField(
-            capture: capture, text: $captureText, focusToken: captureFocus, accent: theme.accent,
-            send: sendCapture, cancel: cancelCapture
-        )
-        .frame(height: NotchMetrics.captureHeight)
-    }
-}
-
-/// The field Wispr Flow types the dictated message into, in the notch's own black style.
-struct CaptureField: View {
-    let capture: CaptureState
-    @Binding var text: String
-    let focusToken: Int
-    let accent: LinearGradient
-    let send: @MainActor () -> Void
-    let cancel: @MainActor () -> Void
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.red)
-                    .symbolEffect(.pulse, isActive: true)
-                Text(capture.status)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            ZStack(alignment: .topLeading) {
-                if text.isEmpty {
-                    // Apple's live transcript as a hint until Wispr's polished text arrives.
-                    Text(capture.transcript.isEmpty ? "Speak now\u{2026}" : String(capture.transcript.suffix(160)))
-                        .font(.system(size: 13))
-                        .foregroundStyle(.white.opacity(0.35))
-                        .lineLimit(2, reservesSpace: false)
-                        .truncationMode(.head)
-                        .allowsHitTesting(false)
-                }
-                TextField("", text: $text, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white)
-                    .lineLimit(1...2)
-                    .focused($focused)
-                    .onSubmit { send() }
-                    .onExitCommand { cancel() }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .topLeading)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(accent, lineWidth: 1.2).opacity(0.9))
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .onAppear { focused = true }
-        .onChange(of: focusToken) { focused = true }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Message to the orchestrator")
     }
 }
 
@@ -308,14 +171,8 @@ struct NotchGlow: View {
 struct VoicePanel: View {
     let isEnabled: Bool
     let isSpeaking: Bool
-    let isOrchestratorMode: Bool
-    let hasOrchestrator: Bool
-    let handsFree: HandsFreeController.Phase
-    let isPinned: Bool
     let accent: LinearGradient
     let setEnabled: @MainActor (Bool) -> Void
-    let setOrchestratorMode: @MainActor (Bool) -> Void
-    let setPinned: @MainActor (Bool) -> Void
     let skip: @MainActor (Bool) -> Void
     let openSettings: @MainActor () -> Void
 
@@ -333,9 +190,7 @@ struct VoicePanel: View {
                         .foregroundStyle(.white)
                     Text(status)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(statusIsWarning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.white.opacity(0.5)))
-                        .lineLimit(1)
-                        .help(status)
+                        .foregroundStyle(.white.opacity(0.5))
                         .contentTransition(.opacity)
                 }
                 Spacer(minLength: 8)
@@ -345,51 +200,21 @@ struct VoicePanel: View {
             .accessibilityElement(children: .combine)
 
             if isSpeaking {
-                Button { skip(false) } label: {
+                Button {
+                    skip(NSEvent.modifierFlags.contains(.option))
+                } label: {
                     Image(systemName: "forward.end.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
                         .frame(width: 28, height: 28)
-                        .background(Circle().fill(Color.white.opacity(0.18)))
+                        .background(Circle().fill(Color.white.opacity(0.12)))
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .help("Skip this reply (Option-click skips everything queued)")
-                .simultaneousGesture(TapGesture().modifiers(.option).onEnded { skip(true) })
-                .contextMenu {
-                    Button("Skip this reply") { skip(false) }
-                    Button("Skip all queued replies") { skip(true) }
-                }
-                .accessibilityLabel("Skip reply")
-                .transition(.scale.combined(with: .opacity))
+                .help("Skip this reply. Option-click to skip every reply waiting too.")
+                .accessibilityLabel("Skip this reply")
+                .accessibilityAction(named: "Skip every reply") { skip(true) }
             }
-
-            Button { setPinned(!isPinned) } label: {
-                Image(systemName: isPinned ? "pin.fill" : "pin")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isPinned ? AnyShapeStyle(accent) : AnyShapeStyle(Color.white.opacity(0.75)))
-                    .rotationEffect(.degrees(isPinned ? 0 : 45))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Color.white.opacity(0.12)))
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help(isPinned ? "Pinned open. Click to let the panel close when the mouse leaves." : "Keep the panel open")
-            .accessibilityLabel("Keep panel open")
-            .accessibilityValue(isPinned ? "On" : "Off")
-
-            Button { setOrchestratorMode(!isOrchestratorMode) } label: {
-                Image(systemName: isOrchestratorMode ? "crown.fill" : "person.3.fill")
-                    .font(.system(size: isOrchestratorMode ? 12 : 11, weight: .semibold))
-                    .foregroundStyle(isOrchestratorMode ? AnyShapeStyle(accent) : AnyShapeStyle(Color.white.opacity(0.75)))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Color.white.opacity(0.12)))
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help(isOrchestratorMode ? "Orchestrator mode: only the orchestrator speaks. Click to hear every session." : "Every session speaks. Click for orchestrator mode.")
-            .accessibilityLabel("Orchestrator mode")
-            .accessibilityValue(isOrchestratorMode ? "On" : "Off")
 
             Button(action: openSettings) {
                 Image(systemName: "gearshape.fill")
@@ -414,6 +239,11 @@ struct VoicePanel: View {
         .padding(.horizontal, 22)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contextMenu {
+            if isSpeaking {
+                Button("Skip This Reply") { skip(false) }
+                Button("Skip Every Reply") { skip(true) }
+                Divider()
+            }
             Button("Settings…") { openSettings() }
             Divider()
             Button("Quit NotchVoice") { NSApp.terminate(nil) }
@@ -421,337 +251,92 @@ struct VoicePanel: View {
     }
 
     private var status: String {
-        if case .failed(let reason) = handsFree { return "Hands-free: " + reason }
-        if handsFree == .capturing { return "Listening to you\u{2026} say \u{201C}\(VoicePhrases.current.send)\u{201D}" }
         if isSpeaking { return "Speaking…" }
-        guard isEnabled else { return "Off" }
-        guard isOrchestratorMode else { return "Replies are read aloud" }
-        return hasOrchestrator ? "Only the orchestrator speaks" : "Run /orchestrator in a session"
+        return isEnabled ? "Replies are read aloud" : "Off"
     }
 }
 
-extension VoicePanel {
-    var statusIsWarning: Bool {
-        if case .failed = handsFree { return true }
-        return false
-    }
-}
-
-/// A small mic beside the closed notch: armed for "Hey orchestrator", hearing a message, or unable to listen.
-struct HandsFreeIndicator: View {
-    let phase: HandsFreeController.Phase
-    let onHeadphones: Bool
+struct TalkCard: View {
+    let card: TalkController.Card
     let accent: LinearGradient
-
-    var body: some View {
-        Group {
-            switch phase {
-            case .listening:
-                Image(systemName: onHeadphones ? "headphones" : "mic.fill").foregroundStyle(accent).opacity(0.85)
-            case .capturing, .sending:
-                Image(systemName: "mic.fill").foregroundStyle(.red).symbolEffect(.pulse, isActive: true)
-            case .failed:
-                Image(systemName: "mic.slash.fill").foregroundStyle(.orange)
-            case .off:
-                EmptyView()
-            }
-        }
-        .font(.system(size: 11, weight: .semibold))
-        .help(help)
-        .accessibilityLabel(help)
-    }
-
-    private var help: String {
-        switch phase {
-        case .listening: onHeadphones ? "Listening for \u{201C}Hey orchestrator\u{201D} through your AirPods" : "Listening for \u{201C}Hey orchestrator\u{201D}"
-        case .capturing: "Taking your message"
-        case .sending: "Sending to the orchestrator"
-        case .failed(let reason): reason
-        case .off: ""
-        }
-    }
-}
-
-struct SessionList: View {
-    let sessions: [ClaudeSession]
-    let speakingSession: String?
-    let orchestratorID: String?
-    let prs: [TrackedPR]
-    let accent: LinearGradient
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(sessions) { session in
-                SessionRow(
-                    session: session,
-                    isSpeaking: session.id == speakingSession,
-                    isOrchestrator: session.id == orchestratorID,
-                    pr: prs.first { $0.sessionID == session.id },
-                    accent: accent
-                )
-                    .frame(height: NotchMetrics.sessionRowHeight)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, NotchMetrics.sessionListPadding)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Claude Code sessions")
-    }
-}
-
-struct SessionRow: View {
-    let session: ClaudeSession
-    let isSpeaking: Bool
-    let isOrchestrator: Bool
-    let pr: TrackedPR?
-    let accent: LinearGradient
+    let cancel: @MainActor () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            indicator
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    if isOrchestrator {
-                        Image(systemName: "crown.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(accent)
-                            .accessibilityLabel("Orchestrator")
-                    }
-                    Text(isOrchestrator ? "Orchestrator" : session.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(session.state == .idle && !isSpeaking ? 0.7 : 1))
-                        .lineLimit(1)
-                }
-                Text(subtitle)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(session.state == .waiting ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.white.opacity(0.5)))
-                    .lineLimit(1)
-                    .contentTransition(.opacity)
-            }
-            Spacer(minLength: 6)
-            if let pr {
-                PRBadge(pr: pr)
-            } else if !session.project.isEmpty, session.project != session.title {
-                Text(session.project)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.35))
-                    .lineLimit(1)
-                    .frame(maxWidth: 110, alignment: .trailing)
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(maxHeight: .infinity)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(accent)
-                .opacity(isSpeaking ? 0.28 : 0)
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(accent, lineWidth: 1)
-                .opacity(isSpeaking ? 0.9 : 0)
-        }
-        .animation(.easeInOut(duration: 0.3), value: isSpeaking)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var subtitle: String {
-        if isSpeaking { return "Speaking…" }
-        if session.state == .idle {
-            return session.activity.isEmpty || session.activity == "Ready" ? "Done" : session.activity
-        }
-        return session.activity.isEmpty ? "Working" : session.activity
-    }
-
-    @ViewBuilder
-    private var indicator: some View {
-        if isSpeaking {
-            Image(systemName: "waveform")
+            Image(systemName: symbol)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(accent)
-                .symbolEffect(.variableColor.iterative, isActive: true)
-        } else {
-            switch session.state {
-            case .waiting:
-                Image(systemName: "hand.raised.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .symbolEffect(.pulse, isActive: true)
-            case .working:
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(accent)
-                    .symbolEffect(.pulse, isActive: true)
-            case .idle:
-                Image(systemName: "checkmark")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.35))
-            }
-        }
-    }
-}
-
-struct NotchTabBar: View {
-    let tab: NotchTab
-    let sessionCount: Int
-    let prCount: Int
-    let accent: LinearGradient
-    let select: @MainActor (NotchTab) -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            button(.sessions, "Sessions", sessionCount)
-            button(.prs, "Pull requests", prCount)
-            Spacer()
-        }
-        .padding(.horizontal, 22)
-    }
-
-    private func button(_ value: NotchTab, _ title: String, _ count: Int) -> some View {
-        let selected = tab == value
-        return Button { select(value) } label: {
-            HStack(spacing: 5) {
+                .foregroundStyle(.white)
+                .symbolEffect(.pulse, isActive: isListening)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(isError ? AnyShapeStyle(Color.orange) : AnyShapeStyle(accent)))
+            VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                Text("\(count)").foregroundStyle(.white.opacity(0.45))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                Text(detail)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
             }
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white.opacity(selected ? 1 : 0.55))
-            .padding(.horizontal, 9)
-            .frame(height: 20)
-            .background(Capsule().fill(Color.white.opacity(selected ? 0.14 : 0)))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-struct PRList: View {
-    let prs: [TrackedPR]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(prs) { pr in
-                PRRow(pr: pr)
-                    .frame(height: NotchMetrics.sessionRowHeight)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if isListening {
+                Button(action: cancel) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Stop without sending")
+                .accessibilityLabel("Stop without sending")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, NotchMetrics.sessionListPadding)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Pull requests")
     }
-}
 
-struct PRRow: View {
-    let pr: TrackedPR
-
-    var body: some View {
-        Button {
-            if let url = pr.url { NSWorkspace.shared.open(url) }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: pr.isMerged ? "arrow.triangle.merge" : "arrow.triangle.pull")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(pr.isMerged ? Color.purple : Color.white.opacity(0.6))
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("#\(pr.number) \(pr.title)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(pr.isMerged ? 0.6 : 1))
-                        .lineLimit(1)
-                    Text([pr.repoName, pr.sessionName].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 6)
-                if pr.isMerged {
-                    Text("Merged")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.purple)
-                } else {
-                    CheckDot(label: "CI", color: pr.ci.color, help: "CI: \(pr.ci.rawValue)")
-                    CheckDot(label: "Bugbot", color: pr.bugbot.color, help: "Cursor Bugbot on the latest commit: \(pr.bugbot.spoken)")
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Open on GitHub")
-        .accessibilityElement(children: .combine)
+    private var isListening: Bool {
+        if case .listening = card { return true }
+        return false
     }
-}
 
-struct PRBadge: View {
-    let pr: TrackedPR
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Text("#\(pr.number)")
-                .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.6))
-            if pr.isMerged {
-                Image(systemName: "arrow.triangle.merge").font(.system(size: 9, weight: .bold)).foregroundStyle(.purple)
-            } else {
-                Circle().fill(pr.ci.color).frame(width: 6, height: 6).help("CI: \(pr.ci.rawValue)")
-                Circle().fill(pr.bugbot.color).frame(width: 6, height: 6).help("Bugbot: \(pr.bugbot.spoken)")
-            }
-        }
-        .padding(.horizontal, 7)
-        .frame(height: 18)
-        .background(Capsule().fill(Color.white.opacity(0.08)))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Pull request \(pr.number), CI \(pr.ci.rawValue), Bugbot \(pr.bugbot.spoken)")
+    private var isError: Bool {
+        if case .done(_, true) = card { return true }
+        return false
     }
-}
 
-struct CheckDot: View {
-    let label: String
-    let color: Color
-    let help: String
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(label)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
-        }
-        .help(help)
-    }
-}
-
-extension TrackedPR.Check {
-    var color: Color {
-        switch self {
-        case .passing: .green
-        case .failing: .red
-        case .pending: .yellow
-        case .none: .white.opacity(0.25)
-        }
-    }
-}
-
-extension TrackedPR.Bugbot {
-    var color: Color {
-        switch self {
-        case .clean: .green
-        case .findings: .red
-        case .running: .yellow
-        case .missing: .white.opacity(0.25)
+    private var symbol: String {
+        switch card {
+        case .listening: "mic.fill"
+        case .writing: "ellipsis"
+        case .sending: "paperplane.fill"
+        case .sent: "checkmark"
+        case .done(_, let isError): isError ? "exclamationmark" : "xmark"
         }
     }
 
-    var spoken: String {
-        switch self {
-        case .clean: "clean"
-        case .findings: "has findings"
-        case .running: "still reviewing"
-        case .missing: "hasn't run"
+    private var title: String {
+        switch card {
+        case .listening(let words, _): words.isEmpty ? "Listening…" : words
+        case .writing(let words): words.isEmpty ? "Your message" : words
+        case .sending(let words): words
+        case .sent: "Sent to the orchestrator"
+        case .done(let message, _): message
+        }
+    }
+
+    private var detail: String {
+        switch card {
+        case .listening(_, let hint): hint
+        case .writing: "Wispr Flow is writing it out…"
+        case .sending: "Sending to the orchestrator…"
+        case .sent: "It will answer out loud"
+        case .done: "Nothing was sent"
         }
     }
 }

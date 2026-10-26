@@ -21,6 +21,8 @@ final class SettingsWindowController {
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        // Otherwise the name field takes focus with its text selected, and a stray key would replace the name.
+        window.makeFirstResponder(nil)
     }
 
     private func makeWindow() -> NSWindow {
@@ -33,35 +35,31 @@ final class SettingsWindowController {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        let available = (NSScreen.main?.visibleFrame.height ?? SettingsView.size.height) - 24
-        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(SettingsView.size.height, available)))
+        let height = SettingsView.size.height + (preferences.hasWisprFlow ? SettingsView.wisprFlowHeight : 0)
+        let available = (NSScreen.main?.visibleFrame.height ?? height) - 24
+        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(height, available)))
         return window
     }
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1180)
+    static let size = CGSize(width: 470, height: 1150)
+    /// The room the Wispr Flow row takes, when Wispr Flow is installed.
+    static let wisprFlowHeight: CGFloat = 37
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
     @State private var catalog = VoiceCatalog.load()
+    @State private var wakeNameDraft = ""
+    @FocusState private var isEditingName: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Form {
                 Section("Voice") {
-                    LabeledContent("Voice") {
-                        HStack(spacing: 8) {
-                            voiceMenu
-                            Button { voice.playSample() } label: { Image(systemName: "play.fill") }
-                                .help("Play a sample")
-                            InfoButton("Your Mac's system voice is chosen in System Settings › Accessibility › Spoken Content.") {
-                                Button("Open Spoken Content…") { NSWorkspace.shared.open(Self.spokenContentSettings) }
-                            }
-                        }
-                    }
+                    LabeledContent("Voice") { voiceMenu }
                     LabeledContent("Speed") {
                         HStack(spacing: 10) {
                             Slider(value: speed, in: 0.6...2.0)
@@ -71,10 +69,19 @@ struct SettingsView: View {
                                 .frame(width: 34, alignment: .trailing)
                         }
                     }
-                    Toggle(isOn: keepsRepliesShort) {
-                        Label2("Short spoken replies", info: "Reminds Claude to answer in a few sentences while voice replies are on.")
+                    LabeledContent {
+                        Button("Play Sample", systemImage: "play.fill") { voice.playSample() }
+                    } label: {
+                        Button("Change System Voice…") { NSWorkspace.shared.open(Self.spokenContentSettings) }
+                            .buttonStyle(.link)
+                            .help("Opens Spoken Content in System Settings, where your Mac's voice is chosen")
                     }
-                    LabeledContent("Music while speaking") {
+                    LabeledContent {
+                        Toggle("Keep spoken replies short", isOn: keepsRepliesShort).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Keep spoken replies short", info: "Reminds Claude to answer in a few sentences while voice replies are on.")
+                    }
+                    LabeledContent {
                         HStack(spacing: 8) {
                             Image(systemName: "speaker.fill").foregroundStyle(.secondary)
                             Slider(value: musicVolume, in: 0...1)
@@ -84,58 +91,94 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .frame(width: 38, alignment: .trailing)
                         }
+                    } label: {
+                        InfoLabel("Music volume", info: "Spotify and Apple Music turn down to this level while Claude speaks.")
                     }
-                    .help("Spotify and Apple Music turn down to this level while Claude speaks.")
                 }
                 Section("Glow") {
                     themePicker
                 }
                 Section("Sessions") {
-                    Toggle(isOn: orchestratorMode) {
-                        Label2("Orchestrator mode", info: "Only the session where you ran /orchestrator speaks. It briefs you on the others and passes your instructions on.")
+                    LabeledContent {
+                        Toggle("Ask for permission in the notch", isOn: asksForPermission).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Ask for permission in the notch", info: "Claude's own prompt still works too, and the first answer counts.")
                     }
-                    Toggle(isOn: asksForPermission) {
-                        Label2("Permission requests in the notch", info: "Claude's own prompt still works too; the first answer counts.")
+                    LabeledContent {
+                        Toggle("Show sessions in the menu bar", isOn: showsSessionsInMenuBar).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Show sessions in the menu bar", info: "Lists your open Claude Code sessions. Click one to go to its window.")
                     }
                 }
-                Section("Hands-free") {
-                    Toggle(isOn: listensForWakeWord) {
-                        Label2("Listen for the wake phrase", info: "Say the wake phrase, dictate with Wispr Flow, then say the send phrase. Your message is typed into the orchestrator session. The phrases are recognised on this Mac.")
-                    }
-                    Group {
-                        Toggle(isOn: listensThroughHeadphones) {
-                            Label2("Use AirPods mic", info: "Listen through your AirPods while a reply is playing, so you can say \u{201C}skip\u{201D}, and when you haven't used the keyboard or mouse for a while. Their audio is call quality while the mic is open.")
+                Section("Talk to the orchestrator") {
+                    LabeledContent {
+                        Toggle(listenTitle, isOn: listensForWakePhrase).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel(listenTitle, info: talkInfo)
+                        if preferences.listensForWakePhrase {
+                            Text("The microphone stays on while an orchestrator is open.")
                         }
-                        if preferences.listensThroughHeadphones {
-                            LabeledContent("Away after") {
-                                Stepper(awayLabel, value: awayDelay, in: Preferences.awayDelayRange, step: 30)
+                    }
+                    LabeledContent("Name") {
+                        TextField("Name", text: $wakeNameDraft, prompt: Text(Preferences.defaultWakeName))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 150)
+                            .focused($isEditingName)
+                            .onSubmit(saveWakeName)
+                            .onChange(of: isEditingName) { _, editing in
+                                if !editing { saveWakeName() }
                             }
-                            Toggle("Not while music plays", isOn: skipsHeadphonesDuringMusic)
-                                .help("Spotify and Apple Music keep full quality; the MacBook mic listens instead.")
-                        }
-                        PhraseEditor(preferences: preferences)
+                            .onDisappear(perform: saveWakeName)
                     }
-                    .disabled(!preferences.listensForWakeWord)
+                    LabeledContent {
+                        HStack(spacing: 10) {
+                            Slider(value: pauseBeforeSending, in: TalkPolicy.pauses, step: 0.5)
+                            Text(String(format: "%.1f s", preferences.pauseBeforeSending))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    } label: {
+                        InfoLabel("Pause before sending", info: "How long a pause sends a message after \(wakePhrase) or a press of the talk shortcut. Holding the shortcut down sends when you let go.")
+                    }
+                    if preferences.hasWisprFlow {
+                        LabeledContent {
+                            Picker("Write out messages with", selection: transcriber) {
+                                Text("Apple (on this Mac)").tag(Transcriber.apple)
+                                Text("Wispr Flow").tag(Transcriber.wisprFlow)
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        } label: {
+                            InfoLabel("Write out messages with", info: "Apple's recognizer works on this Mac. With Wispr Flow, wait for the sound before you speak: Wispr Flow writes out your message, and NotchVoice keeps the keyboard until it\u{2019}s done.")
+                        }
+                    }
                 }
+                .onAppear { wakeNameDraft = preferences.wakeName }
                 Section("Shortcuts") {
                     ShortcutRecorder(
                         title: "Mute",
                         shortcut: preferences.muteShortcut,
                         setShortcut: preferences.setMuteShortcut,
-                        pauseShortcut: preferences.pauseMuteShortcut
+                        pauseShortcut: preferences.pauseShortcuts
                     )
                     ShortcutRecorder(
-                        title: "Skip reply",
+                        title: "Skip the reply",
                         shortcut: preferences.skipShortcut,
                         setShortcut: preferences.setSkipShortcut,
-                        pauseShortcut: preferences.pauseSkipShortcuts
+                        pauseShortcut: preferences.pauseShortcuts
                     )
                     ShortcutRecorder(
-                        title: "Skip all",
-                        shortcut: preferences.skipAllShortcut,
-                        setShortcut: preferences.setSkipAllShortcut,
-                        pauseShortcut: preferences.pauseSkipShortcuts
+                        title: "Talk to the orchestrator",
+                        shortcut: preferences.talkShortcut,
+                        setShortcut: preferences.setTalkShortcut,
+                        pauseShortcut: preferences.pauseShortcuts
                     )
+                    Picker("Talk shortcut works by", selection: talkMode) {
+                        Text("Holding it down").tag(TalkMode.hold)
+                        Text("Pressing it to start").tag(TalkMode.press)
+                    }
                 }
                 Section {
                     Toggle("Open at Login", isOn: opensAtLogin)
@@ -260,32 +303,6 @@ struct SettingsView: View {
         Binding(get: { voice.keepsRepliesShort }, set: { voice.setKeepsRepliesShort($0) })
     }
 
-    private var awayDelay: Binding<Double> {
-        Binding(get: { preferences.awayDelay }, set: { preferences.setAwayDelay($0) })
-    }
-
-    private var awayLabel: String {
-        let seconds = Int(preferences.awayDelay)
-        if seconds < 60 { return "\(seconds) s" }
-        return seconds % 60 == 0 ? "\(seconds / 60) min" : "\(seconds / 60) min \(seconds % 60) s"
-    }
-
-    private var listensThroughHeadphones: Binding<Bool> {
-        Binding(get: { preferences.listensThroughHeadphones }, set: { preferences.setListensThroughHeadphones($0) })
-    }
-
-    private var skipsHeadphonesDuringMusic: Binding<Bool> {
-        Binding(get: { preferences.skipsHeadphonesDuringMusic }, set: { preferences.setSkipsHeadphonesDuringMusic($0) })
-    }
-
-    private var listensForWakeWord: Binding<Bool> {
-        Binding(get: { preferences.listensForWakeWord }, set: { preferences.setListensForWakeWord($0) })
-    }
-
-    private var orchestratorMode: Binding<Bool> {
-        Binding(get: { voice.isOrchestratorMode }, set: { voice.setOrchestratorMode($0) })
-    }
-
     private var musicVolume: Binding<Double> {
         Binding(get: { voice.musicVolume }, set: { voice.setMusicVolume(($0 * 20).rounded() / 20) })
     }
@@ -294,14 +311,51 @@ struct SettingsView: View {
         Binding(get: { preferences.asksForPermission }, set: { preferences.setAsksForPermission($0) })
     }
 
+    private var showsSessionsInMenuBar: Binding<Bool> {
+        Binding(get: { preferences.showsSessionsInMenuBar }, set: { preferences.setShowsSessionsInMenuBar($0) })
+    }
+
+    private var listensForWakePhrase: Binding<Bool> {
+        Binding(get: { preferences.listensForWakePhrase }, set: { preferences.setListensForWakePhrase($0) })
+    }
+
+    private var talkMode: Binding<TalkMode> {
+        Binding(get: { preferences.talkMode }, set: { preferences.setTalkMode($0) })
+    }
+
+    private var pauseBeforeSending: Binding<Double> {
+        Binding(get: { preferences.pauseBeforeSending }, set: { preferences.setPauseBeforeSending($0) })
+    }
+
+    private var transcriber: Binding<Transcriber> {
+        Binding(get: { preferences.transcriber }, set: { preferences.setTranscriber($0) })
+    }
+
+    private var wakePhrase: String {
+        "\u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}"
+    }
+
+    private var listenTitle: String {
+        "Listen for \(wakePhrase)"
+    }
+
+    private var talkInfo: String {
+        "Say \(wakePhrase) or use the talk shortcut, then speak to the session where you ran /orchestrator."
+    }
+
+    private func saveWakeName() {
+        preferences.setWakeName(wakeNameDraft)
+        wakeNameDraft = preferences.wakeName
+    }
+
     private var opensAtLogin: Binding<Bool> {
         Binding(get: { preferences.opensAtLogin }, set: { preferences.setOpensAtLogin($0) })
     }
 }
 
-
-/// A setting's label with an ⓘ that explains it, instead of a paragraph under it.
-struct Label2: View {
+/// A setting's name with a small info button, so the window keeps to short labels and the longer explanation is a
+/// click or a hover away.
+struct InfoLabel: View {
     let title: String
     let info: String
 
@@ -311,82 +365,35 @@ struct Label2: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             Text(title)
-            InfoButton(info)
+            InfoButton(about: title, text: info)
         }
     }
 }
 
-struct InfoButton<Extra: View>: View {
+struct InfoButton: View {
+    let about: String
     let text: String
-    let extra: Extra
-    @State private var showing = false
-
-    init(_ text: String, @ViewBuilder extra: () -> Extra) {
-        self.text = text
-        self.extra = extra()
-    }
+    @State private var isShown = false
 
     var body: some View {
-        Button { showing.toggle() } label: {
-            Image(systemName: "info.circle").foregroundStyle(.secondary)
+        Button {
+            isShown.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .help(text)
-        .popover(isPresented: $showing, arrowEdge: .trailing) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(text).fixedSize(horizontal: false, vertical: true)
-                extra
-            }
-            .padding(14)
-            .frame(width: 260)
+        .accessibilityLabel("About \(about)")
+        .accessibilityHint(text)
+        .popover(isPresented: $isShown, arrowEdge: .bottom) {
+            Text(text)
+                .font(.callout)
+                .frame(width: 260, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
         }
-    }
-}
-
-extension InfoButton where Extra == EmptyView {
-    init(_ text: String) {
-        self.init(text) { EmptyView() }
-    }
-}
-
-/// The spoken phrases, edited as a set: saved when one is committed, if they're all usable.
-struct PhraseEditor: View {
-    @ObservedObject var preferences: Preferences
-    @State private var draft = VoicePhrases.defaults
-    @State private var problem: String?
-
-    var body: some View {
-        Group {
-            field("Wake phrase", \.wake)
-            field("Send phrase", \.send)
-            field("Cancel phrase", \.cancel)
-            field("Skip phrase", \.skip)
-            field("Skip all phrase", \.skipAll)
-            HStack {
-                Text(problem ?? "Short, common words can misfire.")
-                    .font(.caption)
-                    .foregroundStyle(problem == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
-                Spacer()
-                if draft != .defaults {
-                    Button("Reset") {
-                        draft = .defaults
-                        problem = preferences.setPhrases(draft)
-                    }
-                    .controlSize(.small)
-                }
-            }
-        }
-        .onAppear { draft = preferences.phrases }
-    }
-
-    private func field(_ title: String, _ path: WritableKeyPath<VoicePhrases, String>) -> some View {
-        TextField(title, text: Binding(get: { draft[keyPath: path] }, set: { draft[keyPath: path] = $0 }))
-            .onSubmit { problem = preferences.setPhrases(draft) }
-            .onChange(of: draft[keyPath: path]) {
-                // Save as you type when valid; show what's wrong otherwise (the last good phrases stay in use).
-                problem = preferences.setPhrases(draft)
-            }
     }
 }

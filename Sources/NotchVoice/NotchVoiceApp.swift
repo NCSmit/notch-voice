@@ -24,12 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settings: SettingsWindowController?
     private var permissions: PermissionCenter?
     private var sessions: SessionStore?
-    private var tracker: TrackerStore?
-    private var permissionSetting: AnyCancellable?
+    private var statusItem: StatusItemController?
     private var dictation: DictationMonitor?
+    private var talk: TalkController?
     private var dictationChanges: AnyCancellable?
-    private var handsFree: HandsFreeController?
-    private var player: SpeechPlayer?
+    private var permissionSetting: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if isAlreadyRunning {
@@ -37,27 +36,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let voice = VoiceController()
-        let player = SpeechPlayer()
-        player.start()
-        voice.attach(player)
-        self.player = player
+        let muteHotkey = Hotkey { [weak self] in
+            voice.setEnabled(!voice.isEnabled)
+            self?.notch?.flash()
+        }
+        let talkHotkey = Hotkey(
+            action: { [weak self] in self?.talk?.shortcutPressed() },
+            release: { [weak self] in self?.talk?.shortcutReleased() }
+        )
+        let skipHotkey = Hotkey { voice.skip(all: false) }
+        let preferences = Preferences(muteHotkey: muteHotkey, talkHotkey: talkHotkey, skipHotkey: skipHotkey)
         let dictation = DictationMonitor()
         dictationChanges = dictation.$isDictating.sink { dictating in
             MainActor.assumeIsolated { voice.setDictating(dictating) }
         }
         dictation.start()
         self.dictation = dictation
-        let muteHotkey = Hotkey { [weak self] in
-            voice.setEnabled(!voice.isEnabled)
-            self?.notch?.flash()
-        }
-        let preferences = Preferences(muteHotkey: muteHotkey)
-        preferences.attachSkipHotkeys(
-            skip: Hotkey { voice.skip() },
-            skipAll: Hotkey { voice.skip(all: true) }
-        )
-        let handsFree = HandsFreeController(dictation: dictation, preferences: preferences, voice: voice)
-        self.handsFree = handsFree
         let permissions = PermissionCenter()
         permissions.isEnabled = { preferences.asksForPermission }
         permissionSetting = preferences.$asksForPermission.dropFirst().filter { !$0 }.sink { _ in
@@ -68,15 +62,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sessions = SessionStore()
         sessions.start()
         self.sessions = sessions
-        let tracker = TrackerStore()
-        tracker.start(sessions: sessions)
-        self.tracker = tracker
+        let talk = TalkController(sessions: sessions, voice: voice, preferences: preferences, dictation: dictation)
+        self.talk = talk
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, sessions: sessions, tracker: tracker, handsFree: handsFree) { settings.show() }
-        handsFree.surface = notch
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, talk: talk) { settings.show() }
+        statusItem = StatusItemController(sessions: sessions, voice: voice, preferences: preferences) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Wispr Flow may still be about to paste a message's text, which would land in another app once NotchVoice
+        // is gone, so quitting waits for that, a few seconds at most.
+        let waits = talk?.prepareToQuit { NSApp.reply(toApplicationShouldTerminate: true) } ?? false
+        return waits ? .terminateLater : .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        dictation?.stop()
     }
 
     @objc private func showSettings() {

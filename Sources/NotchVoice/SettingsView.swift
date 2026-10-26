@@ -43,7 +43,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1340)
+    static let size = CGSize(width: 470, height: 1384)
     /// The room the Wispr Flow row and its longer footer take, when Wispr Flow is installed.
     static let wisprFlowHeight: CGFloat = 52
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
@@ -167,6 +167,12 @@ struct SettingsView: View {
                         title: "Mute shortcut",
                         shortcut: preferences.muteShortcut,
                         setShortcut: preferences.setMuteShortcut,
+                        pauseShortcut: preferences.pauseShortcuts
+                    )
+                    ShortcutRecorder(
+                        title: "Skip shortcut",
+                        shortcut: preferences.skipShortcut,
+                        setShortcut: preferences.setSkipShortcut,
                         pauseShortcut: preferences.pauseShortcuts
                     )
                     Toggle("Open at Login", isOn: opensAtLogin)

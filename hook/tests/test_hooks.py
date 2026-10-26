@@ -973,7 +973,7 @@ class QueueTests(unittest.TestCase):
                "speak.QUEUE_DIR = os.path.join(d, 'queue'); speak.OWNER_FILE = os.path.join(d, 'owner'); "
                "speak.SESSION_FILE = os.path.join(d, 'session'); speak.DUCK_FILE = os.path.join(d, 'duck'); "
                "speak.DICTATION_FILE = os.path.join(d, 'dictating'); speak.MUSIC_APPS = []; "
-               "speak.MUTE_FILE = os.path.join(d, 'off'); speak.main()")
+               "speak.MUTE_FILE = os.path.join(d, 'off'); speak.SKIP_FILE = os.path.join(d, 'skip'); speak.main()")
         env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"], HOME=self.dir.name)
         env.pop("NOTCHVOICE_SAMPLE", None)
         if sample:
@@ -1018,6 +1018,28 @@ class QueueTests(unittest.TestCase):
         time.sleep(0.15)
         Path(self.dir.name, "off").touch()
         self.assertEqual(self.spoken(one, two), ["start", "one", "end", "one"])
+
+    def test_skipping_every_reply_keeps_the_waiting_ones_quiet(self):
+        one = self.hook("one")
+        time.sleep(0.15)
+        two = self.hook("two")
+        time.sleep(0.15)
+        with open(os.path.join(self.dir.name, "skip"), "w") as f:
+            f.write(str(time.time_ns()))
+        three = self.hook("three")
+        self.assertEqual(self.spoken(one, two, three), ["start", "one", "end", "one", "start", "three", "end", "three"])
+
+    def test_a_skip_mark_only_covers_replies_queued_before_it(self):
+        with mock.patch.object(speak, "SKIP_FILE", os.path.join(self.dir.name, "skip")):
+            earlier = self.take()
+            with open(speak.SKIP_FILE, "w") as f:
+                f.write(str(time.time_ns()))
+            later = self.take()
+            self.assertTrue(speak.skipped(earlier))
+            self.assertFalse(speak.skipped(later))
+            with open(speak.SKIP_FILE, "w") as f:
+                f.write("not a time")
+            self.assertFalse(speak.skipped(earlier))
 
     def test_a_reply_of_just_a_dash_stays_quiet(self):
         with mock.patch.object(speak, "take_ticket") as queued, mock.patch.object(speak.sys, "stdin", io.StringIO(

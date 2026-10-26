@@ -26,6 +26,7 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 - **Music steps aside.** Spotify and Apple Music get quieter while Claude speaks, then return to the volume they were at.
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off, or set a keyboard shortcut for it. Turning them off mid-sentence stops the speech straight away.
 - **Permissions in the notch.** When Claude asks to run a command or edit a file, the notch shows the request with Allow and Deny.
+- **Questions in the notch.** When Claude asks you a multiple-choice question, it appears in the notch and is read aloud, so you can answer without going to its window.
 - **Sessions in the menu bar.** A menu bar icon lists your open Claude Code sessions and what each one is doing. Click one to go straight to it.
 - **An orchestrator.** Type `/orchestrator` in one session and it becomes the single voice over all the others: it briefs you, tells you when a session needs you, and passes your instructions on.
 - **Regular chats too.** Chats in the Claude desktop app can be read aloud as well, through a small local speak tool.
@@ -56,7 +57,14 @@ When Claude Code needs your permission, the notch opens on its own and shows wha
 - **Several at once.** Requests from other sessions or agents queue up, and the card shows how many more are waiting.
 - **Not now?** Click ✕ to dismiss the card and answer in Claude instead. To turn the feature off, use **Ask for permission in the notch** in settings.
 
-Questions Claude asks you, and plan approvals, stay in Claude Code because they need more than a yes or no.
+Plan approvals stay in Claude Code because they need more than a yes or no.
+
+## Questions
+
+When Claude asks you a multiple-choice question, the notch shows it with its options, and NotchVoice reads it aloud. Click an option to answer, tick several when Claude allows it, or type your own answer under **Other…**. When Claude asks a few questions at once, the card steps through them.
+
+- **The notch asks first.** While a question waits in the notch, Claude Code doesn't show it. Click **Answer in Claude** to answer it there instead, or the arrow to go to that session.
+- **Nothing gets stuck.** A question goes back to Claude by itself after ten minutes, or straight away if NotchVoice isn't running. To keep questions in Claude, turn off **Answer Claude's questions in the notch** in settings.
 
 ## Mute shortcut
 
@@ -152,7 +160,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Short replies.** Turn the "keep spoken replies short" reminder on or off. It's on by default.
 - **Music volume.** Choose how loud Spotify and Apple Music stay while Claude speaks, from silent to unchanged.
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
-- **Sessions.** Turn permission requests in the notch on or off, and show or hide your sessions in the menu bar.
+- **Sessions.** Turn permission requests and questions in the notch on or off, and show or hide your sessions in the menu bar.
 - **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, choose how long a pause sends a message (1 to 5 seconds, 2.5 by default), and choose whether your Mac or Wispr Flow writes out your messages.
 - **Shortcuts.** Set keyboard shortcuts that turn voice replies on or off, skip the reply being read aloud, and talk to the orchestrator, and choose whether you hold the talk shortcut or press it.
 
@@ -230,7 +238,9 @@ The `UserPromptSubmit` hook adds a one-line reminder to each prompt while voice 
 
 The sessions hook runs, without making Claude wait, on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` and `SessionEnd`, and rewrites the session's status file each time. The handoff hook runs only on `SessionStart` after a compaction, and Claude waits for it, so the saved working state arrives before Claude carries on. The app lists a session for as long as its Claude Code process is running. No hook runs when you interrupt Claude with Esc, so the app also checks the end of a working session's transcript for Claude Code's interrupt note. Session names and desktop app ids come from Claude Code's own record of each running session in `~/.claude/sessions/`, which NotchVoice only reads.
 
-The permission hook sends each request to the app over a Unix socket at `$TMPDIR/notchvoice.sock`, then prints the app's answer as the hook's decision. Claude Code shows its own prompt at the same time. If you answer there first, the hook sees the result in the session transcript and withdraws the card. If the app isn't running, the hook exits straight away, and Claude Code asks as usual.
+The permission hook sends each request to the app over a Unix socket at `$TMPDIR/notchvoice.sock`, then prints the app's answer as the hook's decision. Claude Code shows its own prompt at the same time. If you answer there first, the hook sees the result in the session transcript and withdraws the card. If the app isn't running, the hook keeps trying for a few seconds in case it's restarting, then leaves the request to Claude Code's prompt. If the app restarts while a card is showing, the hook sends the card again.
+
+The question hook runs before Claude Code shows a question, on `PreToolUse` for `AskUserQuestion` only. It sends the questions to the app over `$TMPDIR/notchvoice_question.sock` and waits. With your answer, it tells Claude Code to go ahead with the answers filled in, which Claude Code's hook documentation describes, so no question box appears. If you hand the question back, or the app isn't there, the hook exits and Claude Code asks as usual.
 
 Right-click the panel, or click the menu bar icon, for **Settings…** and **Quit**.
 

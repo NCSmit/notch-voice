@@ -43,7 +43,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1150)
+    static let size = CGSize(width: 470, height: 1187)
     /// The room the Wispr Flow row takes, when Wispr Flow is installed.
     static let wisprFlowHeight: CGFloat = 37
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
@@ -103,6 +103,11 @@ struct SettingsView: View {
                         Toggle("Ask for permission in the notch", isOn: asksForPermission).labelsHidden().toggleStyle(.switch)
                     } label: {
                         InfoLabel("Ask for permission in the notch", info: "Claude's own prompt still works too, and the first answer counts.")
+                    }
+                    LabeledContent {
+                        Toggle("Answer Claude's questions in the notch", isOn: answersQuestions).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Answer Claude's questions in the notch", info: "Claude's multiple-choice questions show in the notch first, and are read aloud. While one waits there, Claude doesn't show it. Click Answer in Claude to answer it there instead. After ten minutes it goes back to Claude by itself.")
                     }
                     LabeledContent {
                         Toggle("Show sessions in the menu bar", isOn: showsSessionsInMenuBar).labelsHidden().toggleStyle(.switch)
@@ -309,6 +314,10 @@ struct SettingsView: View {
 
     private var asksForPermission: Binding<Bool> {
         Binding(get: { preferences.asksForPermission }, set: { preferences.setAsksForPermission($0) })
+    }
+
+    private var answersQuestions: Binding<Bool> {
+        Binding(get: { preferences.answersQuestions }, set: { preferences.setAnswersQuestions($0) })
     }
 
     private var showsSessionsInMenuBar: Binding<Bool> {

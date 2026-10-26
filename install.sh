@@ -30,6 +30,7 @@ if os.path.exists(path):
     session_events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")
     entries = [("Stop", "speak.py"), ("PermissionRequest", "notchvoice_permission.py"), ("UserPromptSubmit", "notchvoice_brief.py")]
     entries += [(event, "notchvoice_sessions.py") for event in session_events] + [("SessionStart", "notchvoice_handoff.py")]
+    entries += [("PreToolUse", "notchvoice_question.py")]
     for event, script in entries:
         groups = []
         for group in hooks.get(event, []):
@@ -53,7 +54,7 @@ if os.path.exists(path):
         json.dump(settings, f, indent=2)
         f.write("\n")
 EOF
-  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOOKS/notchvoice_handoff.py" "$HOOKS/notchvoice_snapshot.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
+  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOOKS/notchvoice_handoff.py" "$HOOKS/notchvoice_snapshot.py" "$HOOKS/notchvoice_question.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
   rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/notchvoice/handoffs" "$HOME/.claude/notchvoice/inbox" "$HOME/.claude/skills/orchestrator"
   rm -f "$HOME/.claude/notchvoice/orchestrator.json" "$HOME/.claude/notchvoice/permissions.log" "$HOME/.claude/notchvoice/permissions.log.1"
   rmdir "$HOME/.claude/notchvoice" 2>/dev/null || true
@@ -68,7 +69,7 @@ if ! command -v swift >/dev/null 2>&1; then
 fi
 
 mkdir -p "$HOOKS"
-for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py notchvoice_sessions.py notchvoice_handoff.py notchvoice_snapshot.py; do
+for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py notchvoice_sessions.py notchvoice_handoff.py notchvoice_snapshot.py notchvoice_question.py; do
   if [[ -f "$HOOKS/$script" ]] && ! cmp -s "hook/$script" "$HOOKS/$script"; then
     cp "$HOOKS/$script" "$HOOKS/$script.bak"
     echo "Saved your previous $script as $HOOKS/$script.bak"
@@ -96,8 +97,10 @@ wanted = [
 ] + [(event, sessions_hook) for event in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")]
 # Only compactions wait for this one, so it can hand a session back the working state it saved.
 wanted.append(("SessionStart", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_handoff.py", "timeout": 10}))
+# Claude's questions go to the notch first, with ten minutes to answer, so this hook's timeout is a little longer.
+wanted.append(("PreToolUse", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_question.py", "timeout": 660}))
 matchers = {"PreToolUse": "*", "PostToolUse": "*", "PermissionRequest": "*"}
-matchers_by_script = {"notchvoice_handoff.py": "compact"}
+matchers_by_script = {"notchvoice_handoff.py": "compact", "notchvoice_question.py": "AskUserQuestion"}
 
 
 def runs(hook, script):

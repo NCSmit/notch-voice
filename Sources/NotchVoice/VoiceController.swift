@@ -34,6 +34,7 @@ final class VoiceController: ObservableObject {
     // The hook whose session speakingSession was read for, so the file is read once per reply.
     private var sessionOwner: pid_t?
     private var sample: Process?
+    private var announcement: Process?
     // speak.py pauses `say` while the user dictates, so a reply in progress isn't speaking then.
     private var isDictating = false
 
@@ -104,20 +105,38 @@ final class VoiceController: ObservableObject {
     func playSample() {
         let name = voiceID.flatMap { AVSpeechSynthesisVoice(identifier: $0)?.name }
         let text = (name.map { "Hi, I'm \($0). " } ?? "Hi! ") + "This is how Claude's replies will sound."
-        guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return }
+        sample = speak(text, environment: ["NOTCHVOICE_SAMPLE": "1"])
+    }
+
+    /// Reads a question aloud like a reply: it takes its turn, and stays quiet while voice replies are off.
+    func announce(_ text: String) {
+        stopAnnouncement()
+        announcement = speak(text)
+    }
+
+    /// Stops a question that is still being read, or still waiting its turn, once it is answered.
+    func stopAnnouncement() {
+        if announcement?.isRunning == true { announcement?.terminate() }
+        announcement = nil
+    }
+
+    /// Runs speak.py with `text`, the way the Stop hook does.
+    private func speak(_ text: String, environment: [String: String] = [:]) -> Process? {
+        guard let payload = try? JSONSerialization.data(withJSONObject: ["last_assistant_message": text]) else { return nil }
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/env")
         process.arguments = ["python3", hookScript.path]
-        process.environment = ProcessInfo.processInfo.environment.merging(["NOTCHVOICE_SAMPLE": "1"]) { $1 }
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
         let input = Pipe()
         process.standardInput = input
         do {
             try process.run()
             input.fileHandleForWriting.write(payload)
             try input.fileHandleForWriting.close()
-            sample = process
+            return process
         } catch {
-            log.error("could not play a voice sample: \(error.localizedDescription)")
+            log.error("could not run speak.py: \(error.localizedDescription)")
+            return nil
         }
     }
 

@@ -152,6 +152,9 @@ def take_over():
 
 
 def user_is_dictating():
+    # A voice sample is played on request from the settings window, so it never waits.
+    if os.environ.get("NOTCHVOICE_SAMPLE"):
+        return False
     try:
         return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_FRESH
     except OSError:

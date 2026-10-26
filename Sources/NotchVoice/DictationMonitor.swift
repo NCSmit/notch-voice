@@ -6,8 +6,9 @@ private let log = Logger(subsystem: "local.notchvoice", category: "dictation")
 
 /// Knows when the user is dictating, so Claude never talks over them.
 ///
-/// Core Audio says which processes are capturing the microphone (macOS 14.2 and later), and tells NotchVoice when that
-/// changes, so nothing is polled. Only dictation apps count: Wispr Flow and Apple's own dictation. While one captures,
+/// Core Audio says which processes are capturing the microphone (macOS 14.2 and later). It doesn't announce when a
+/// process starts capturing, but it does announce when an audio device or a process starts or stops running, so
+/// NotchVoice checks again on each of those, and nothing is polled. Only dictation apps count: Wispr Flow and Apple's own dictation. While one captures,
 /// and for a moment after, the flag file $TMPDIR/notchvoice_dictating is kept fresh. speak.py holds a reply back while
 /// it is fresh and pauses one already speaking. If NotchVoice quits, the flag goes stale within seconds, so speech is
 /// never left stuck.
@@ -23,7 +24,12 @@ final class DictationMonitor: ObservableObject {
     // speak.py treats a flag older than 5 s as gone, so it is refreshed well within that.
     private static let refresh: TimeInterval = 2
 
-    private var listeners: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
+    private struct Listened: Hashable {
+        let object: AudioObjectID
+        let selector: AudioObjectPropertySelector
+    }
+
+    private var listeners: [Listened: AudioObjectPropertyListenerBlock] = [:]
     private var isCapturing = false
     private var graceTimer: Timer?
     private var refreshTimer: Timer?
@@ -35,25 +41,33 @@ final class DictationMonitor: ObservableObject {
     func start() {
         try? FileManager.default.removeItem(at: Self.flagFile)
         guard #available(macOS 14.2, *) else { return }
-        listen(to: AudioObjectID(kAudioObjectSystemObject), selector: kAudioHardwarePropertyProcessObjectList)
-        update()
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        listen(to: system, selector: kAudioHardwarePropertyProcessObjectList) { $0.follow(kAudioProcessPropertyIsRunning, on: Self.audioProcesses()) }
+        listen(to: system, selector: kAudioHardwarePropertyDevices) { $0.follow(kAudioDevicePropertyDeviceIsRunningSomewhere, on: Self.devices()) }
+        follow(kAudioProcessPropertyIsRunning, on: Self.audioProcesses())
+        follow(kAudioDevicePropertyDeviceIsRunningSomewhere, on: Self.devices())
     }
 
     func stop() {
         try? FileManager.default.removeItem(at: Self.flagFile)
     }
 
+    /// Listens for `selector` on each of `objects`, afresh each time their list changes, since Core Audio can give a new
+    /// process the id of one that just went away. Then checks again who is capturing.
     @available(macOS 14.2, *)
-    private func update() {
-        let processes = Self.audioProcesses()
-        let system = AudioObjectID(kAudioObjectSystemObject)
-        for id in listeners.keys where id != system && !processes.contains(id) {
-            unlisten(from: id, selector: kAudioProcessPropertyIsRunningInput)
+    private func follow(_ selector: AudioObjectPropertySelector, on objects: [AudioObjectID]) {
+        for key in listeners.keys where key.selector == selector {
+            unlisten(key)
         }
-        for id in processes where listeners[id] == nil {
-            listen(to: id, selector: kAudioProcessPropertyIsRunningInput)
+        for object in objects {
+            listen(to: object, selector: selector) { $0.check() }
         }
-        setCapturing(processes.contains(where: Self.isDictating))
+        check()
+    }
+
+    @available(macOS 14.2, *)
+    private func check() {
+        setCapturing(Self.audioProcesses().contains(where: Self.isDictating))
     }
 
     private func setCapturing(_ capturing: Bool) {
@@ -88,20 +102,24 @@ final class DictationMonitor: ObservableObject {
     }
 
     @available(macOS 14.2, *)
-    private func listen(to object: AudioObjectID, selector: AudioObjectPropertySelector) {
+    private func listen(to object: AudioObjectID, selector: AudioObjectPropertySelector,
+                        then react: @escaping @MainActor (DictationMonitor) -> Void) {
         var address = Self.address(selector)
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.update() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                react(self)
+            }
         }
         guard AudioObjectAddPropertyListenerBlock(object, &address, DispatchQueue.main, block) == noErr else { return }
-        listeners[object] = block
+        listeners[Listened(object: object, selector: selector)] = block
     }
 
-    private func unlisten(from object: AudioObjectID, selector: AudioObjectPropertySelector) {
-        guard let block = listeners.removeValue(forKey: object) else { return }
-        var address = Self.address(selector)
-        // The process may already be gone, in which case there is nothing left to remove.
-        _ = AudioObjectRemovePropertyListenerBlock(object, &address, DispatchQueue.main, block)
+    private func unlisten(_ key: Listened) {
+        guard let block = listeners.removeValue(forKey: key) else { return }
+        var address = Self.address(key.selector)
+        // The object may already be gone, in which case there is nothing left to remove.
+        _ = AudioObjectRemovePropertyListenerBlock(key.object, &address, DispatchQueue.main, block)
     }
 
     private nonisolated static func isDictating(_ process: AudioObjectID) -> Bool {
@@ -113,7 +131,15 @@ final class DictationMonitor: ObservableObject {
 
     @available(macOS 14.2, *)
     private nonisolated static func audioProcesses() -> [AudioObjectID] {
-        var address = address(kAudioHardwarePropertyProcessObjectList)
+        objects(kAudioHardwarePropertyProcessObjectList)
+    }
+
+    private nonisolated static func devices() -> [AudioObjectID] {
+        objects(kAudioHardwarePropertyDevices)
+    }
+
+    private nonisolated static func objects(_ selector: AudioObjectPropertySelector) -> [AudioObjectID] {
+        var address = address(selector)
         var size: UInt32 = 0
         let system = AudioObjectID(kAudioObjectSystemObject)
         guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }

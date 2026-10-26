@@ -798,6 +798,11 @@ class DictationTests(unittest.TestCase):
         self.dictate(age=speak.DICTATION_FRESH + 1)
         self.assertFalse(speak.user_is_dictating())
 
+    def test_a_voice_sample_never_waits(self):
+        self.dictate()
+        with mock.patch.dict(os.environ, {"NOTCHVOICE_SAMPLE": "1"}):
+            self.assertFalse(speak.user_is_dictating())
+
     def test_a_reply_waits_for_dictation_to_end_but_not_forever(self):
         speak.write_owner(os.getpid())
         self.assertTrue(speak.wait_while_dictating(time.time()))

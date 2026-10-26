@@ -32,9 +32,13 @@ def user_temp_dir():
 
 
 SOCKET = os.path.join(user_temp_dir(), "notchvoice.sock")
-# How long to keep trying when NotchVoice isn't reachable (it may be restarting).
+# How long to keep trying to reach NotchVoice, which isn't there for a moment while it restarts.
 CONNECT_GRACE = 6
-# One line per permission request and what happened to it, for diagnosing missed cards.
+# A card is sent again after NotchVoice restarts with it showing, but only a few times, in case the request itself is
+# what keeps stopping the app.
+RESENDS = 3
+# One line per permission request and what happened to it, for finding out why a card didn't show. It holds the tool's
+# name but never what it was asked to do.
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "permissions.log")
 
 
@@ -106,42 +110,65 @@ class Transcript:
         return False
 
 
-def ask_notch(request, transcript):
-    """Show the request in the notch and wait for the answer. Returns (decision, outcome) where decision is
-    "allow", "deny" or None, and outcome says what happened, for the log."""
-    deadline = time.time() + CONNECT_GRACE
-    attempts = 0
-    while True:
-        attempts += 1
+class AppWentAway(Exception):
+    """NotchVoice stopped without answering, because it quit or restarted while the card was showing."""
+
+
+ANSWERED_IN_CLAUDE = object()
+
+
+def ask_once(request, transcript):
+    """Shows the request in the notch and waits for the answer, or for Claude's own prompt to be answered. Raises
+    OSError when NotchVoice isn't running, AppWentAway when it stops while the card shows, and ValueError for a reply
+    it can't read."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.connect(SOCKET)
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.connect(SOCKET)
-                connection.sendall((json.dumps(request) + "\n").encode())
-                reply = b""
-                while not reply.endswith(b"\n"):
-                    readable, _, _ = select.select([connection], [], [], 0.5)
-                    if readable:
-                        chunk = connection.recv(4096)
-                        if not chunk:
-                            break  # the app went away mid-wait (restart or crash): try again below
-                        reply += chunk
-                    elif transcript.answered_elsewhere():
-                        return None, "answered in Claude"
-                if reply.endswith(b"\n"):
-                    decision = json.loads(reply).get("decision")
-                    return (decision if decision in ("allow", "deny") else None), f"notch: {decision}"
+            connection.sendall((json.dumps(request) + "\n").encode())
+            reply = b""
+            while not reply.endswith(b"\n"):
+                readable, _, _ = select.select([connection], [], [], 0.5)
+                if readable:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        raise AppWentAway
+                    reply += chunk
+                elif transcript.answered_elsewhere():
+                    return ANSWERED_IN_CLAUDE
+        except OSError as error:
+            raise AppWentAway from error
+    answer = json.loads(reply)
+    if not isinstance(answer, dict):
+        raise ValueError("not an answer")
+    return answer.get("decision")
+
+
+def ask_notch(request, transcript):
+    """Shows the request in the notch and waits for the answer. Returns (decision, outcome): the decision is "allow",
+    "deny" or None, and the outcome says what happened, for the log. Each time NotchVoice can't be reached, the hook
+    keeps trying for a few seconds, since the app may be restarting."""
+    deadline = time.time() + CONNECT_GRACE
+    resends = 0
+    while True:
+        try:
+            decision = ask_once(request, transcript)
+            if decision is ANSWERED_IN_CLAUDE:
+                return None, "answered in Claude"
+            return (decision if decision in ("allow", "deny") else None), f"notch: {decision}"
+        except AppWentAway:
+            if resends == RESENDS:
+                return None, "notch app kept stopping"
+            resends += 1
+            deadline = time.time() + CONNECT_GRACE
         except OSError:
-            pass  # not running (yet): NotchVoice may be restarting
+            pass
         except ValueError:
             return None, "bad reply"
         if transcript.answered_elsewhere():
             return None, "answered in Claude"
-        if time.time() > deadline and attempts > 1:
+        if time.time() > deadline:
             return None, "notch app not reachable"
         time.sleep(0.5)
-        # After a dropped connection (NotchVoice restarted), give the app the same grace to come back.
-        if attempts == 1:
-            deadline = max(deadline, time.time() + CONNECT_GRACE)
 
 
 def log_request(payload, outcome, started):
@@ -151,7 +178,7 @@ def log_request(payload, outcome, started):
             os.replace(LOG_FILE, LOG_FILE + ".1")
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps({
-                "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "session": payload.get("session_id"),
                 "mode": payload.get("permission_mode"),
                 "tool": payload.get("tool_name"),

@@ -8,17 +8,12 @@ private let log = Logger(subsystem: "local.notchvoice", category: "permissions")
 final class PermissionServer: @unchecked Sendable {
     static let socketPath = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice.sock").path
 
-    private let path: String
-    private let queue: DispatchQueue
+    private let queue = DispatchQueue(label: "local.notchvoice.permissions")
     private let onRequest: @Sendable (PermissionConnection, Data) -> Void
     private let onClose: @Sendable (PermissionConnection) -> Void
     private var listener: DispatchSourceRead?
 
-    /// One request line in, one `{"decision": …}` line out. Also used by the speech player's socket.
-    init(path: String = PermissionServer.socketPath, label: String = "local.notchvoice.permissions",
-         onRequest: @escaping @Sendable (PermissionConnection, Data) -> Void, onClose: @escaping @Sendable (PermissionConnection) -> Void) {
-        self.path = path
-        self.queue = DispatchQueue(label: label)
+    init(onRequest: @escaping @Sendable (PermissionConnection, Data) -> Void, onClose: @escaping @Sendable (PermissionConnection) -> Void) {
         self.onRequest = onRequest
         self.onClose = onClose
     }
@@ -28,7 +23,7 @@ final class PermissionServer: @unchecked Sendable {
     }
 
     private func listen() {
-        let path = self.path
+        let path = Self.socketPath
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return log.error("socket() failed: \(errno)") }
         var address = sockaddr_un()
@@ -106,18 +101,6 @@ final class PermissionConnection: @unchecked Sendable, Identifiable {
         }
         self.source = source
         source.resume()
-    }
-
-    /// Reply with any JSON object (the question card sends its answers this way).
-    func reply(json: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return reply("ask") }
-        queue.async { [self] in
-            guard !isFinished else { return }
-            isFinished = true
-            let line = Array(data) + [UInt8(ascii: "\n")]
-            _ = line.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
-            source?.cancel()
-        }
     }
 
     func reply(_ decision: String) {

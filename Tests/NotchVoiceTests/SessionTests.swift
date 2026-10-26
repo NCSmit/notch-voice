@@ -68,6 +68,20 @@ struct SessionTests {
         #expect(list.map(\.state) == [.idle, .waiting, .working])
     }
 
+    @Test func takesItsNameAndDesktopIDFromClaudeCodesRegistry() throws {
+        let session = try #require(makeSession("idle"))
+        let named = session.naming(from: [
+            "sessionId": session.id, "name": "Notch review", "nameSource": "user", "hostSessionId": "local_447c04a4-b726",
+        ])
+        #expect(named.title == "Notch review")
+        #expect(named.desktopID == "local_447c04a4-b726")
+        #expect(session.naming(from: ["sessionId": "someone-else", "name": "Other"]).title == "Fix the bug")
+        #expect(session.naming(from: ["sessionId": session.id, "name": "orch-7a", "nameSource": "derived"]).title == "Fix the bug")
+        #expect(session.naming(from: ["sessionId": session.id, "hostSessionId": "../../x"]).desktopID == nil)
+        let long = session.naming(from: ["sessionId": session.id, "name": String(repeating: "word ", count: 30)])
+        #expect(long.title.count == ClaudeSession.titleLength && long.title.hasSuffix("…"))
+    }
+
     @Test func anInterruptedSessionIsIdle() throws {
         let session = try #require(makeSession("working", extra: ["activity": "Thinking"])).interrupted
         #expect(session.state == .idle)
@@ -174,6 +188,11 @@ struct SessionMenuTests {
         #expect(items[1].image?.accessibilityDescription == "Orchestrator")
         let plain = StatusItemController.menuItems(for: [makeSession("working")], speakingSession: nil, canOpen: { _ in true }, target: nil)
         #expect(!plain.map(\.title).contains("Let Every Session Speak"))
+    }
+
+    @Test func aDesktopSessionOpensByItsOwnLink() {
+        #expect(SessionOpener.desktopLink("local_447c04a4-b726")?.absoluteString == "claude://claude.ai/epitaxy/local_447c04a4-b726")
+        #expect(SessionOpener.desktopLink("local_x/../../etc") == nil)
     }
 
     @Test func onlyTerminalAndITermHaveATabToSelect() {

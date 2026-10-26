@@ -12,7 +12,11 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$BIN_DIR/NotchVoice" "$APP/Contents/MacOS/NotchVoice"
 cp Info.plist "$APP/Contents/Info.plist"
 xattr -cr "$APP"
-codesign --force --sign - "$APP"
+# macOS ties privacy permissions (microphone, speech recognition, control of Terminal) to an app's designated
+# requirement. An ad-hoc signature's default one names this exact build, so every rebuild would lose them. Naming the
+# bundle id instead keeps them. The catch is that any app signed this way with the same id gets them too; only a real
+# signing certificate prevents that.
+codesign --force --sign - --identifier local.notchvoice --requirements '=designated => identifier "local.notchvoice"' "$APP"
 
 if [[ "${1:-}" == "--install" ]]; then
   pkill -x NotchVoice || true

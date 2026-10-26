@@ -58,9 +58,11 @@ struct NotchView: View {
 
     var body: some View {
         let isExpanded = isOpen || prompt != nil || question != nil || talk != nil
+        // A message being spoken shows over a question for its few seconds, so the user still sees what was heard.
         let size = prompt != nil ? metrics.permissionSize
+            : talk != nil ? metrics.talkSize
             : question.map { metrics.questionSize(options: $0.questions[questionProgress.index].options.count) }
-            ?? (talk != nil ? metrics.talkSize : isOpen ? metrics.openSize : metrics.closedSize)
+            ?? (isOpen ? metrics.openSize : metrics.closedSize)
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
         let showsBody = isExpanded || isGlowing
@@ -84,17 +86,17 @@ struct NotchView: View {
                         insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                         removal: .opacity.animation(.easeIn(duration: 0.1))
                     ))
-            } else if let question {
-                QuestionCard(prompt: question, sessionName: questionFrom, progress: questionProgress, accent: theme.accent,
-                             actions: questionActions)
-                    .id(question.id)
+            } else if let talk {
+                TalkCard(card: talk, accent: theme.accent, cancel: cancelTalk)
                     .padding(.top, metrics.notch.height)
                     .transition(.asymmetric(
                         insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
                         removal: .opacity.animation(.easeIn(duration: 0.1))
                     ))
-            } else if let talk {
-                TalkCard(card: talk, accent: theme.accent, cancel: cancelTalk)
+            } else if let question {
+                QuestionCard(prompt: question, sessionName: questionFrom, progress: questionProgress, accent: theme.accent,
+                             actions: questionActions)
+                    .id(question.id)
                     .padding(.top, metrics.notch.height)
                     .transition(.asymmetric(
                         insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),

@@ -188,12 +188,12 @@ final class NotchController {
             setInteractive(permissionZone.contains(mouse) || isMenuOpen)
             return
         }
-        if state.question != nil {
-            setInteractive(questionZone.contains(mouse))
-            return
-        }
         if state.talk != nil {
             setInteractive(talkZone.contains(mouse))
+            return
+        }
+        if state.question != nil {
+            setInteractive(questionZone.contains(mouse))
             return
         }
         if state.isOpen {

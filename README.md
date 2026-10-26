@@ -152,7 +152,7 @@ This works in the Claude desktop app only. The claude.ai website and the mobile 
 Click the cog in the notch to open settings. Changes apply to the next reply, with no restart needed.
 
 <p align="center">
-  <img src="docs/settings.png" alt="The NotchVoice settings window with sections for the voice and music volume, the glow theme, sessions and permissions, talking to the orchestrator, and shortcuts" width="470">
+  <img src="docs/settings.png" alt="The NotchVoice settings window with sections for the voice and music volume, the glow theme, sessions, permissions and questions, talking to the orchestrator, and shortcuts" width="470">
 </p>
 
 - **Voice.** By default NotchVoice uses your Mac's own spoken content voice, and the menu shows its name, for example "Siri Voice 1 (System)". **Change System Voice…** opens the Spoken Content page in System Settings, where that voice is chosen. You can also choose any other installed macOS voice, and you hear a short sample as soon as you pick one.

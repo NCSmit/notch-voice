@@ -109,6 +109,7 @@ Speak to your orchestrator without going to its window. Your words go to the ses
 - **Or use the talk shortcut.** Set it in settings, and choose whether you hold it while you speak and let go to send, or press it once to start and pause or press again to send.
 - **See and hear what's going on.** The notch shows your words as you speak, and a short sound marks the start and the send. Say "cancel" at the end, or click ✕, to stop without sending.
 - **Replies wait for you.** While you speak, a reply that's playing pauses, as it does when you dictate.
+- **It doesn't answer itself.** While NotchVoice reads a reply aloud, and for a moment after, "Hey Jarvis" is ignored, so a reply that mentions it can't start a message. Use the talk shortcut to cut in.
 - **On your Mac only.** Your words are recognised on this Mac, from its built-in microphone, so Bluetooth headphones stay in their high-quality mode. The first time, macOS asks to allow the microphone and speech recognition. If you'd rather have Wispr Flow write out your messages, see [below](#write-out-messages-with-wispr-flow).
 
 While **Listen for "Hey Jarvis"** is on and an orchestrator is open, the microphone stays on, and macOS shows its orange dot. With it off, the microphone is only used while you talk.

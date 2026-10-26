@@ -46,7 +46,8 @@ The helper script is `~/.claude/hooks/notchvoice_snapshot.py`, installed with No
      message, and you are re-invoked with `{"user_said": [...], "sessions": [...]}`.
    - Answer anything in `user_said` first (see **Messages from the user**). Brief the user on what changed in
      `sessions` in one or two sentences, then re-arm it.
-   - Exit code 2 means nothing changed before the timeout. Re-arm it silently.
+   - Exit code 2 means nothing changed before the timeout. Re-arm it silently: make your whole reply a single em
+     dash (—), which NotchVoice doesn't read aloud.
    - Never poll with sleeps.
 4. When the user says to stop orchestrating, run `snapshot release`.
    - The user can also click **Let Every Session Speak** in NotchVoice's menu. Every session is heard again, and you

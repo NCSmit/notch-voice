@@ -878,7 +878,7 @@ class DictationTests(unittest.TestCase):
         speak.write_owner(os.getpid())
         self.assertTrue(speak.wait_while_dictating(time.time()))
         self.dictate()
-        self.assertFalse(speak.wait_while_dictating(time.time() - speak.DEADLINE - 1))
+        self.assertFalse(speak.wait_while_dictating(time.time() - speak.WAIT_LIMIT - 1))
         speak.write_owner(1)
         self.assertFalse(speak.wait_while_dictating(time.time()))
         with mock.patch.object(speak.time, "sleep", side_effect=lambda _: self.dictate(False)):
@@ -919,6 +919,112 @@ class DictationTests(unittest.TestCase):
             speak.take_over()
         self.assertEqual([c.args for c in kill.call_args_list],
                          [(111, signal.SIGTERM), (111, signal.SIGCONT), (222, signal.SIGTERM), (222, signal.SIGCONT)])
+
+
+class QueueTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patcher = mock.patch.object(speak, "QUEUE_DIR", self.dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def take(self, sample=False):
+        ticket = speak.take_ticket(sample)
+        self.addCleanup(lambda: os.path.exists(ticket[0]) and speak.leave_queue(ticket))
+        return ticket
+
+    def test_replies_take_turns_oldest_first(self):
+        first, second = self.take(), self.take()
+        self.assertEqual(speak.others_in_queue(first, ahead_only=True), [])
+        self.assertEqual(speak.others_in_queue(second, ahead_only=True), [os.path.basename(first[0])])
+        threading.Timer(0.4, speak.leave_queue, [first]).start()
+        started = time.time()
+        self.assertTrue(speak.wait_for_turn(second, started))
+        self.assertGreaterEqual(time.time() - started, 0.3)
+
+    def test_a_voice_sample_goes_ahead_of_waiting_replies(self):
+        reply = self.take()
+        sample = self.take(sample=True)
+        self.assertEqual(speak.others_in_queue(sample, ahead_only=True), [])
+        self.assertEqual(speak.others_in_queue(reply, ahead_only=True), [os.path.basename(sample[0])])
+
+    def test_a_ticket_left_by_a_killed_hook_is_skipped_and_cleared(self):
+        left = os.path.join(self.dir.name, f"b-{1:020d}-999999")
+        Path(left).touch()
+        mine = self.take()
+        self.assertEqual(speak.others_in_queue(mine), [])
+        self.assertFalse(os.path.exists(left))
+
+    def test_waiting_too_long_gives_up(self):
+        ahead, mine = self.take(), self.take()
+        self.assertFalse(speak.wait_for_turn(mine, time.time() - speak.WAIT_LIMIT - 1))
+        self.assertTrue(os.path.exists(ahead[0]))
+
+    def hook(self, reply, sample=False):
+        """Runs the real hook in its own process, with its shared files here and a silent `say` that logs its turns."""
+        bin_dir = os.path.join(self.dir.name, "bin")
+        if not os.path.isdir(bin_dir):
+            os.makedirs(bin_dir)
+            with open(os.path.join(bin_dir, "say"), "w") as f:
+                f.write(f"#!/bin/sh\nread text\necho \"start $text\" >> {self.log}\nsleep 0.6\necho \"end $text\" >> {self.log}\n")
+            os.chmod(os.path.join(bin_dir, "say"), 0o755)
+        run = (f"import sys, os; sys.path.insert(0, {str(HOOKS)!r}); import speak; d = {self.dir.name!r}; "
+               "speak.QUEUE_DIR = os.path.join(d, 'queue'); speak.OWNER_FILE = os.path.join(d, 'owner'); "
+               "speak.SESSION_FILE = os.path.join(d, 'session'); speak.DUCK_FILE = os.path.join(d, 'duck'); "
+               "speak.DICTATION_FILE = os.path.join(d, 'dictating'); speak.MUSIC_APPS = []; "
+               "speak.MUTE_FILE = os.path.join(d, 'off'); speak.main()")
+        env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"], HOME=self.dir.name)
+        env.pop("NOTCHVOICE_SAMPLE", None)
+        if sample:
+            env["NOTCHVOICE_SAMPLE"] = "1"
+        hook = subprocess.Popen([sys.executable, "-c", run], stdin=subprocess.PIPE, env=env, text=True)
+        hook.stdin.write(json.dumps({"last_assistant_message": reply}))
+        hook.stdin.close()
+        self.addCleanup(lambda: hook.poll() is None and hook.kill())
+        return hook
+
+    def spoken(self, *hooks):
+        for hook in hooks:
+            self.assertEqual(hook.wait(timeout=10), 0)
+        with open(self.log) as f:
+            return f.read().split()
+
+    @property
+    def log(self):
+        return os.path.join(self.dir.name, "say.log")
+
+    def test_two_hooks_never_speak_at_once_and_the_music_comes_back_once(self):
+        hooks = []
+        for reply in ("one", "two", "three"):
+            hooks.append(self.hook(reply))
+            time.sleep(0.1)
+        self.assertEqual(self.spoken(*hooks), ["start", "one", "end", "one", "start", "two", "end", "two", "start", "three", "end", "three"])
+        self.assertEqual([n for n in os.listdir(os.path.join(self.dir.name, "queue")) if not n.startswith(".")], [])
+        self.assertFalse(os.path.exists(os.path.join(self.dir.name, "owner")))
+
+    def test_a_voice_sample_stops_the_reply_speaking_and_goes_before_the_rest(self):
+        one = self.hook("one")
+        time.sleep(0.15)
+        two = self.hook("two")
+        time.sleep(0.15)
+        sample = self.hook("sample", sample=True)
+        self.assertEqual(self.spoken(one, two, sample), ["start", "one", "start", "sample", "end", "sample", "start", "two", "end", "two"])
+
+    def test_a_reply_waiting_its_turn_stays_quiet_once_voice_replies_are_off(self):
+        one = self.hook("one")
+        time.sleep(0.15)
+        two = self.hook("two")
+        time.sleep(0.15)
+        Path(self.dir.name, "off").touch()
+        self.assertEqual(self.spoken(one, two), ["start", "one", "end", "one"])
+
+    def test_a_reply_of_just_a_dash_stays_quiet(self):
+        with mock.patch.object(speak, "take_ticket") as queued, mock.patch.object(speak.sys, "stdin", io.StringIO(
+                json.dumps({"last_assistant_message": " \u2014 "}))), mock.patch.object(speak, "MUTE_FILE", "/nonexistent"):
+            speak.main()
+        queued.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

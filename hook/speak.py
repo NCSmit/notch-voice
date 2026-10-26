@@ -7,6 +7,8 @@ Settings come from ~/.claude/tts_settings.json, which the NotchVoice notch app w
   duck   how loud Spotify / Music stay while speaking, as a fraction of their volume, else $CLAUDE_TTS_DUCK, else 0.5
 Mute: touch ~/.claude/tts_off   Unmute: rm ~/.claude/tts_off   (NotchVoice samples set NOTCHVOICE_SAMPLE=1 and play anyway)
 """
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -48,9 +50,15 @@ SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 # app quit, counts as gone after DICTATION_FRESH seconds, so a reply can't stay held or paused.
 DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
 DICTATION_FRESH = 5
-# The Stop hook is given 300 s. A reply still held back or paused by then is dropped, so `say` is never left stopped
-# when the hook is ended.
-DEADLINE = 280
+# Replies take turns, oldest first. Each hook that is waiting or speaking holds a lock on its own ticket here, so a
+# ticket left by a hook that was killed is recognised. Voice samples from the settings window go ahead of replies.
+QUEUE_DIR = os.path.join(user_temp_dir(), "claude_tts_queue")
+# The Stop hook is given 600 s. A reply that hasn't started by WAIT_LIMIT, waiting its turn or for dictation to end, is
+# dropped as stale. One still paused at DEADLINE is dropped too, so `say` is never left stopped when the hook is ended.
+WAIT_LIMIT = 280
+DEADLINE = 580
+# A reply that is only this mark has nothing to say, so the orchestrator can end a quiet turn without being read aloud.
+SILENT_MARK = "\u2014"
 
 
 def is_tool_result_only(content):
@@ -144,11 +152,83 @@ def stop(pid):
 
 
 def take_over():
-    """Stop the previous reply at any stage (still preparing, paused or speaking) and claim the voice."""
+    """Stop the reply speaking, at any stage, and claim the voice. Only voice samples do this; replies take turns."""
     for pid in read_owner():
         if pid != os.getpid():
             stop(pid)
     write_owner(os.getpid())
+
+
+@contextlib.contextmanager
+def claiming():
+    """Held while a hook checks that its turn has come and claims the voice, and while a voice sample joins the queue
+    and stops the reply speaking, so neither can slip in between the other's two steps."""
+    os.makedirs(QUEUE_DIR, exist_ok=True)
+    fd = os.open(os.path.join(QUEUE_DIR, ".claim"), os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def take_ticket(sample):
+    """Joins the queue, and returns the ticket's path and the open file that keeps it locked until this hook ends."""
+    os.makedirs(QUEUE_DIR, exist_ok=True)
+    name = f"{'a' if sample else 'b'}-{time.time_ns():020d}-{os.getpid()}"
+    temp = os.path.join(QUEUE_DIR, f".{name}")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    # Locked before it can be seen, so no other hook takes it for one left behind.
+    path = os.path.join(QUEUE_DIR, name)
+    os.rename(temp, path)
+    return path, fd
+
+
+def leave_queue(ticket):
+    path, fd = ticket
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    os.close(fd)
+
+
+def is_held(path):
+    """Whether the hook that took this ticket is still alive. One that was killed lost its lock, and its ticket goes."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return False
+
+
+def others_in_queue(ticket, ahead_only=False):
+    mine = os.path.basename(ticket[0])
+    try:
+        names = sorted(name for name in os.listdir(QUEUE_DIR) if not name.startswith("."))
+    except OSError:
+        return []
+    return [name for name in names
+            if name != mine and (name < mine or not ahead_only) and is_held(os.path.join(QUEUE_DIR, name))]
+
+
+def wait_for_turn(ticket, started):
+    while others_in_queue(ticket, ahead_only=True):
+        if time.time() - started > WAIT_LIMIT:
+            return False
+        time.sleep(0.2)
+    return True
 
 
 def user_is_dictating():
@@ -162,9 +242,9 @@ def user_is_dictating():
 
 
 def wait_while_dictating(started):
-    """Never start talking over the user. False when a newer reply took over or the wait ran out."""
+    """Never start talking over the user. False when a voice sample took over or the wait ran out."""
     while user_is_dictating():
-        if not is_owner() or time.time() - started > DEADLINE:
+        if not is_owner() or time.time() - started > WAIT_LIMIT:
             return False
         time.sleep(0.2)
     return is_owner()
@@ -227,7 +307,7 @@ def set_app_volume(app, volume):
 
 
 def duck_music(factor):
-    # Keep the first saved volumes when a reply interrupts another, so the restore uses the real level.
+    # Keep the first saved volumes while replies follow one another, so the restore uses the real level.
     if os.path.exists(DUCK_FILE):
         return
     original = {app: v for app in MUSIC_APPS if (v := app_volume(app)) is not None}
@@ -249,14 +329,15 @@ def restore_music():
 
 
 def main():
-    if os.path.exists(MUTE_FILE) and not os.environ.get("NOTCHVOICE_SAMPLE"):
+    sample = bool(os.environ.get("NOTCHVOICE_SAMPLE"))
+    if os.path.exists(MUTE_FILE) and not sample:
         return
     payload = json.load(sys.stdin)
     text = payload.get("last_assistant_message") or last_reply_from_transcript(
         payload.get("transcript_path", "")
     )
     text = clean(text or "")
-    if not text:
+    if not text or text == SILENT_MARK:
         return
 
     settings = load_settings()
@@ -271,24 +352,48 @@ def main():
         cmd += ["-r", str(rate)]
 
     started = time.time()
-    take_over()
-    write_session(payload.get("session_id"))
-    if not wait_while_dictating(started):
+    # Stopped by a voice sample, or by Claude Code at the hook's timeout: leave the queue on the way out.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    with claiming():
+        ticket = take_ticket(sample)
+        if sample:
+            take_over()
+    proc = None
+    try:
+        while True:
+            if not wait_for_turn(ticket, started):
+                return
+            with claiming():
+                # A voice sample may have joined ahead since the check.
+                if not others_in_queue(ticket, ahead_only=True):
+                    write_owner(os.getpid())
+                    break
+        # Voice replies may have been switched off, or another session made the orchestrator, while this one waited.
+        if not sample and (os.path.exists(MUTE_FILE) or silenced(payload)):
+            return
+        write_session(payload.get("session_id"))
+        if not wait_while_dictating(started):
+            return
+        duck_music(music_level(settings))
+        if not is_owner():
+            return  # A voice sample took over.
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
+        write_owner(os.getpid(), proc.pid)
+        play(proc, text, started)
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if proc and proc.poll() is None:
+            stop(proc.pid)
+        leave_queue(ticket)
         if is_owner():
-            os.remove(OWNER_FILE)
+            try:
+                os.remove(OWNER_FILE)
+            except OSError:
+                pass
             clear_session()
-        return
-    duck_music(music_level(settings))
-    if not is_owner():
-        return  # A newer reply took over while we were ducking; it restores the music.
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
-    write_owner(os.getpid(), proc.pid)
-    play(proc, text, started)
-    # A newer reply kills this process outright, so reaching here means we finished last.
-    if is_owner():
-        restore_music()
-        os.remove(OWNER_FILE)
-        clear_session()
+        # The music stays down between replies, and comes back after the last one in the queue.
+        if not others_in_queue(ticket):
+            restore_music()
 
 if __name__ == "__main__":
     main()

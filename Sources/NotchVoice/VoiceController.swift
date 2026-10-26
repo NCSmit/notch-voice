@@ -17,22 +17,20 @@ final class VoiceController: ObservableObject {
     @Published private(set) var speed = 1.0
     @Published private(set) var musicVolume = 0.5
     @Published private(set) var keepsRepliesShort = true
-    /// Only the session that ran /orchestrator speaks; it reports on the others.
-    @Published private(set) var isOrchestratorMode = false
 
     // The contract of ~/.claude/hooks/speak.py: it stays silent while the mute file exists, takes its voice, rate
     // and music level from the settings file, and writes "<hook pid> <say pid>" to the owner file while it speaks.
     private let muteFile = URL.homeDirectory.appending(path: ".claude/tts_off")
     private let settingsFile = URL.homeDirectory.appending(path: ".claude/tts_settings.json")
     private let ownerFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_owner")
-    // The session_id of the reply being spoken, written by the hook next to the owner file.
+    // "<hook pid> <session_id>" of the reply being spoken, written by the hook next to the owner file.
     private let sessionFile = URL(filePath: NSTemporaryDirectory()).appending(path: "claude_tts_session")
     private let hookScript = URL.homeDirectory.appending(path: ".claude/hooks/speak.py")
     private var directoryWatcher: DispatchSourceFileSystemObject?
     private var pollTimer: Timer?
+    // The hook whose session speakingSession was read for, so the file is read once per reply.
+    private var sessionOwner: pid_t?
     private var sample: Process?
-    private var isDictating = false
-    private var pausedSay: pid_t?
 
     init() {
         loadSettings()
@@ -45,18 +43,6 @@ final class VoiceController: ObservableObject {
             try? FileManager.default.removeItem(at: muteFile)
         } else {
             FileManager.default.createFile(atPath: muteFile.path, contents: nil)
-        }
-        refresh()
-    }
-
-    /// Never talk over the user: a reply already speaking is paused (SIGSTOP) while they dictate and picks up
-    /// where it left off afterwards. Replies that haven't started yet wait in speak.py for the dictation flag file.
-    func setDictating(_ dictating: Bool) {
-        isDictating = dictating
-        if !dictating, let pid = pausedSay {
-            kill(pid, SIGCONT)
-            pausedSay = nil
-            log.info("resumed say \(pid) after dictation")
         }
         refresh()
     }
@@ -83,11 +69,6 @@ final class VoiceController: ObservableObject {
         saveSettings()
     }
 
-    func setOrchestratorMode(_ enabled: Bool) {
-        isOrchestratorMode = enabled
-        saveSettings()
-    }
-
     func loadSettings() {
         let settings = (try? Data(contentsOf: settingsFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
@@ -98,7 +79,6 @@ final class VoiceController: ObservableObject {
         speed = (settings["rate"] as? Double).map { ($0 / Self.baseRate * 10).rounded() / 10 } ?? 1
         musicVolume = settings["duck"] as? Double ?? 0.5
         keepsRepliesShort = settings["brief"] as? Bool ?? true
-        isOrchestratorMode = settings["orchestrator"] as? Bool ?? false
     }
 
     func playSample() {
@@ -124,33 +104,31 @@ final class VoiceController: ObservableObject {
     func refresh() {
         let enabled = !FileManager.default.fileExists(atPath: muteFile.path)
         let pids = ownerPids()
-        let sayPid = pids.dropFirst().first.flatMap { Self.processName($0) == "say" ? $0 : nil }
+        let sayPid = pids.dropFirst().first.flatMap { Processes.name(of: $0) == "say" ? $0 : nil }
         let isSample = sample?.isRunning == true && pids.first == sample?.processIdentifier
         if let sayPid, !enabled, !isSample {
             // Stopping only `say` lets the hook finish normally, and it restores the music volume itself.
-            // A paused `say` only acts on SIGTERM once it is continued.
             kill(sayPid, SIGTERM)
-            kill(sayPid, SIGCONT)
-            if pausedSay == sayPid { pausedSay = nil }
             log.info("stopped say \(sayPid) because voice replies are off")
-        } else if let sayPid, isDictating, pausedSay != sayPid, !isSample {
-            kill(sayPid, SIGSTOP)
-            pausedSay = sayPid
-            log.info("paused say \(sayPid) while the user dictates")
         }
         if isEnabled != enabled { isEnabled = enabled }
-        let speaking = sayPid != nil && (enabled || isSample) && pausedSay != sayPid
+        let speaking = sayPid != nil && (enabled || isSample)
         if isSpeaking != speaking {
             isSpeaking = speaking
             log.info("speaking: \(speaking)")
         }
-        let session = speaking ? (try? String(contentsOf: sessionFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-        if speakingSession != session { speakingSession = session }
-        setPolling(pids.contains { Self.isAlive($0) })
+        let owner = speaking ? pids.first : nil
+        if owner != sessionOwner {
+            let session = owner.flatMap(speakingSession(of:))
+            if speakingSession != session { speakingSession = session }
+            // The hook writes the session just after claiming the voice, so keep looking until it names this owner.
+            if session != nil || owner == nil { sessionOwner = owner }
+        }
+        setPolling(pids.contains { Processes.isAlive($0) })
     }
 
     private func saveSettings() {
-        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort, "orchestrator": isOrchestratorMode]
+        var settings: [String: Any] = ["duck": NSDecimalNumber(string: String(format: "%.2f", musicVolume)), "brief": keepsRepliesShort]
         if let voiceID { settings["voice"] = voiceID }
         if abs(speed - 1) > 0.01 { settings["rate"] = Int((Self.baseRate * speed).rounded()) }
         guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) else { return }
@@ -159,6 +137,13 @@ final class VoiceController: ObservableObject {
         } catch {
             log.error("could not save settings: \(error.localizedDescription)")
         }
+    }
+
+    private func speakingSession(of owner: pid_t) -> String? {
+        guard let text = try? String(contentsOf: sessionFile, encoding: .utf8) else { return nil }
+        let fields = text.split(whereSeparator: \.isWhitespace)
+        guard fields.count == 2, pid_t(fields[0]) == owner else { return nil }
+        return String(fields[1])
     }
 
     private func ownerPids() -> [pid_t] {
@@ -189,15 +174,5 @@ final class VoiceController: ObservableObject {
         source.setCancelHandler { close(descriptor) }
         source.resume()
         directoryWatcher = source
-    }
-
-    private nonisolated static func isAlive(_ pid: pid_t) -> Bool {
-        kill(pid, 0) == 0 || errno == EPERM
-    }
-
-    private nonisolated static func processName(_ pid: pid_t) -> String? {
-        var buffer = [CChar](repeating: 0, count: 64)
-        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-        return buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
     }
 }

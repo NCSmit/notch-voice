@@ -14,13 +14,16 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
+
+try:
+    from notchvoice_sessions import orchestrator
+except ImportError:  # installed without the sessions hook, so there is no orchestrator either
+    def orchestrator(check_name=True):
+        return None
 
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
-ORCHESTRATOR_FILE = os.path.join(HOME, ".claude", "notchvoice", "orchestrator.json")
-SESSIONS_DIR = os.path.join(HOME, ".claude", "notchvoice", "sessions")
 DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 MUSIC_APPS = ["Spotify", "Music"]
 
@@ -37,11 +40,8 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
-# Exists while the user is dictating (NotchVoice watches Wispr Flow and Apple dictation use the microphone).
-DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
-DICTATION_STALE_SECONDS = 15 * 60  # a flag this old was left behind by an app that quit mid-dictation
-DICTATION_MAX_WAIT = 270  # the Stop hook's timeout is 300 s
-# The session_id of the reply currently speaking, so the notch can light up that session.
+# "<hook pid> <session_id>" of the reply currently speaking, so the menu bar can mark that session. The app only trusts
+# it while the hook pid matches the owner file.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
 
@@ -90,32 +90,14 @@ def load_settings():
     return settings if isinstance(settings, dict) else {}
 
 
-def read_json(path):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def orchestrator_session(settings):
-    """The session that speaks for all the others in orchestrator mode, or None when every session speaks."""
-    if not settings.get("orchestrator"):
-        return None
-    session = read_json(ORCHESTRATOR_FILE).get("session_id")
-    if not isinstance(session, str) or not session:
-        return None
-    if read_json(os.path.join(SESSIONS_DIR, f"{session}.json")).get("state") == "ended":
-        return None
-    return session
-
-
-def silenced(payload, settings):
-    orchestrator = orchestrator_session(settings)
+def silenced(payload):
+    """While a session is the orchestrator, only its replies are read aloud. Samples and desktop chats carry no
+    session, so they always speak."""
     session = payload.get("session_id")
-    # Samples and desktop chats carry no session, so they always speak.
-    return bool(orchestrator and session and session != orchestrator)
+    if not session:
+        return False
+    boss = orchestrator()
+    return bool(boss) and session != boss
 
 
 def music_level(settings):
@@ -156,30 +138,23 @@ def take_over():
     write_owner(os.getpid())
 
 
-def user_is_dictating():
-    try:
-        return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_STALE_SECONDS
-    except OSError:
-        return False
-
-
-def wait_for_dictation_to_end():
-    """Never start talking over the user. Returns False if a newer reply took over while we waited."""
-    deadline = time.time() + DICTATION_MAX_WAIT
-    while user_is_dictating() and time.time() < deadline:
-        time.sleep(0.2)
-        if not is_owner():
-            return False
-    return True
-
-
 def write_session(session_id):
+    if not isinstance(session_id, str) or not session_id:
+        return
+    temp = f"{SESSION_FILE}.{os.getpid()}"
     try:
-        if isinstance(session_id, str) and session_id:
-            with open(SESSION_FILE, "w") as f:
-                f.write(session_id)
-        else:
-            os.remove(SESSION_FILE)
+        with open(temp, "w") as f:
+            f.write(f"{os.getpid()} {session_id}")
+        os.replace(temp, SESSION_FILE)
+    except OSError:
+        pass
+
+
+def clear_session():
+    try:
+        with open(SESSION_FILE) as f:
+            if f.read().split()[:1] == [str(os.getpid())]:
+                os.remove(SESSION_FILE)
     except OSError:
         pass
 
@@ -233,7 +208,7 @@ def main():
         return
 
     settings = load_settings()
-    if silenced(payload, settings):
+    if silenced(payload):
         return
     cmd = ["say"]
     voice = settings.get("voice") or os.environ.get("CLAUDE_TTS_VOICE")
@@ -245,8 +220,6 @@ def main():
 
     take_over()
     write_session(payload.get("session_id"))
-    if not wait_for_dictation_to_end():
-        return
     duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.
@@ -257,7 +230,7 @@ def main():
     if is_owner():
         restore_music()
         os.remove(OWNER_FILE)
-        write_session(None)
+        clear_session()
 
 if __name__ == "__main__":
     main()

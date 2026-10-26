@@ -26,6 +26,7 @@ struct ClaudeSession: Identifiable, Equatable {
     /// The Claude desktop app's id for the session, when it runs there.
     private(set) var desktopID: String?
 
+    static let titleLength = 60
     // Used only when the hook couldn't find the session's process: a finished session stays listed for a while,
     // and one that is working but silent this long has likely crashed.
     static let idleLifetime: TimeInterval = 15 * 60
@@ -70,7 +71,8 @@ struct ClaudeSession: Identifiable, Equatable {
         var session = self
         if let name = (registry["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
            registry["nameSource"] as? String != "derived" {
-            session.title = name
+            // As long as the hook's titles at most, so one long name can't widen the whole menu.
+            session.title = name.count > Self.titleLength ? name.prefix(Self.titleLength - 1).trimmingCharacters(in: .whitespaces) + "…" : name
         }
         if let host = registry["hostSessionId"] as? String, Self.isDesktopID(host) {
             session.desktopID = host

@@ -78,6 +78,8 @@ struct SessionTests {
         #expect(session.naming(from: ["sessionId": "someone-else", "name": "Other"]).title == "Fix the bug")
         #expect(session.naming(from: ["sessionId": session.id, "name": "orch-7a", "nameSource": "derived"]).title == "Fix the bug")
         #expect(session.naming(from: ["sessionId": session.id, "hostSessionId": "../../x"]).desktopID == nil)
+        let long = session.naming(from: ["sessionId": session.id, "name": String(repeating: "word ", count: 30)])
+        #expect(long.title.count == ClaudeSession.titleLength && long.title.hasSuffix("…"))
     }
 
     @Test func anInterruptedSessionIsIdle() throws {

@@ -170,7 +170,7 @@ def registry(session, status):
     found = {}
     name = entry.get("name")
     if isinstance(name, str) and name.strip() and entry.get("nameSource") != "derived":
-        found["name"] = name.strip()
+        found["name"] = shorten(name, TITLE_LENGTH)
     host = entry.get("hostSessionId")
     if isinstance(host, str) and DESKTOP_ID.fullmatch(host):
         found["desktop_session_id"] = host

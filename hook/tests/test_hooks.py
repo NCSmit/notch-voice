@@ -28,6 +28,7 @@ brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
+sessions = load("notchvoice_sessions")
 
 
 def run_main(module, payload):
@@ -86,6 +87,20 @@ class SpeakTests(unittest.TestCase):
             self.assertEqual(Path(fresh_speak.OWNER_FILE).parent, app_folder)
             self.assertEqual(Path(fresh_permission.SOCKET).parent, app_folder)
 
+
+    def test_the_speaking_session_is_tagged_with_the_hook_and_only_it_clears_it(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(speak, "SESSION_FILE", os.path.join(folder, "claude_tts_session")):
+            speak.write_session("abc-123")
+            with open(speak.SESSION_FILE) as f:
+                self.assertEqual(f.read(), f"{os.getpid()} abc-123")
+            with mock.patch.object(speak.os, "getpid", return_value=1):
+                speak.clear_session()
+            self.assertTrue(os.path.exists(speak.SESSION_FILE))
+            speak.clear_session()
+            self.assertFalse(os.path.exists(speak.SESSION_FILE))
+            speak.write_session(None)
+            self.assertEqual(os.listdir(folder), [])
 
 class BriefTests(unittest.TestCase):
     def run_hook(self, settings=None, muted=False):
@@ -326,6 +341,129 @@ class DesktopConfigTests(unittest.TestCase):
         desktop.wait_for_exit(app.pid)
         self.assertLess(time.monotonic() - started, 0.9)
         app.wait()
+
+
+
+class SessionTests(unittest.TestCase):
+    CLAUDE = {"pid": 4242, "process": "claude", "tty": "/dev/ttys003"}
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for patcher in (
+            mock.patch.object(sessions, "SESSIONS_DIR", self.dir.name),
+            mock.patch.object(sessions, "claude_process", return_value=dict(self.CLAUDE)),
+            mock.patch.dict(os.environ, {"__CFBundleIdentifier": "com.apple.Terminal"}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def send(self, event, **fields):
+        run_main(sessions, {"hook_event_name": event, "session_id": "abc-123", "cwd": "/Users/someone/demo", **fields})
+        with open(os.path.join(self.dir.name, "abc-123.json")) as f:
+            return json.load(f)
+
+    def test_follows_a_session_from_prompt_to_reply(self):
+        status = self.send("UserPromptSubmit", prompt="Fix   the login\nbug please")
+        self.assertEqual((status["state"], status["title"], status["project"]), ("working", "Fix the login bug please", "demo"))
+        status = self.send("PreToolUse", tool_name="Edit", tool_input={"file_path": "/Users/someone/demo/login.py"})
+        self.assertEqual(status["activity"], "Editing login.py")
+        status = self.send("PermissionRequest", tool_name="Bash", tool_input={"command": "npm test", "description": "Run the tests"})
+        self.assertEqual((status["state"], status["activity"]), ("waiting", "Needs you: Running Run the tests"))
+        status = self.send("Stop", last_assistant_message="**Fixed** the bug. Tests pass now.")
+        self.assertEqual((status["state"], status["activity"]), ("idle", "Fixed the bug."))
+        status = self.send("UserPromptSubmit", prompt="Now ship it")
+        self.assertEqual(status["title"], "Fix the login bug please")
+
+    def test_questions_and_plans_wait_for_you(self):
+        status = self.send("PreToolUse", tool_name="AskUserQuestion", tool_input={"questions": []})
+        self.assertEqual((status["state"], status["activity"]), ("waiting", "Needs you: a question"))
+        status = self.send("PermissionRequest", tool_name="ExitPlanMode", tool_input={"plan": "..."})
+        self.assertEqual((status["state"], status["activity"]), ("waiting", "Needs you: a plan to approve"))
+        self.assertEqual(self.send("PostToolUse", tool_name="ExitPlanMode")["state"], "working")
+
+    def test_remembers_where_the_session_runs(self):
+        status = self.send("SessionStart", source="startup")
+        self.assertEqual(
+            (status["pid"], status["process"], status["tty"], status["app"]),
+            (4242, "claude", "/dev/ttys003", "com.apple.Terminal"),
+        )
+
+    def test_looks_up_the_process_once_and_again_when_resumed(self):
+        self.send("SessionStart", source="startup")
+        self.send("PreToolUse", tool_name="Read", tool_input={})
+        self.send("Stop", last_assistant_message="Done.")
+        self.assertEqual(sessions.claude_process.call_count, 1)
+        sessions.claude_process.return_value = {"pid": 5151, "process": "claude"}
+        with mock.patch.dict(os.environ, {"__CFBundleIdentifier": "com.googlecode.iterm2"}):
+            status = self.send("SessionStart", source="resume")
+        self.assertEqual((status["pid"], status["app"]), (5151, "com.googlecode.iterm2"))
+        self.assertNotIn("tty", status)
+
+    def test_a_session_that_started_before_the_hook_is_looked_up_on_its_next_event(self):
+        self.assertEqual(self.send("PreToolUse", tool_name="Read", tool_input={})["pid"], 4242)
+
+    def test_a_process_ps_cannot_find_is_not_looked_up_again(self):
+        sessions.claude_process.return_value = {}
+        self.assertIsNone(self.send("SessionStart", source="startup")["pid"])
+        self.send("PreToolUse", tool_name="Read", tool_input={})
+        self.assertEqual(sessions.claude_process.call_count, 1)
+
+    def test_keeps_when_the_session_started(self):
+        with mock.patch.object(sessions.time, "time", return_value=100.0):
+            self.send("SessionStart", source="startup")
+        with mock.patch.object(sessions.time, "time", return_value=200.0):
+            status = self.send("UserPromptSubmit", prompt="Hello")
+        self.assertEqual((status["started"], status["updated"]), (100.0, 200.0))
+
+    def test_an_older_event_never_overwrites_a_newer_one(self):
+        self.send("Stop", last_assistant_message="Done.")
+        with mock.patch.object(sessions.time, "time", return_value=1.0):
+            status = self.send("PreToolUse", tool_name="Read", tool_input={})
+        self.assertEqual(status["state"], "idle")
+
+    def test_an_ended_session_stays_ended_until_it_is_resumed(self):
+        self.send("SessionEnd")
+        self.assertEqual(self.send("PostToolUse", tool_name="Read")["state"], "ended")
+        self.assertEqual(self.send("SessionStart")["state"], "idle")
+
+    def test_ignores_unknown_events_and_unsafe_session_ids(self):
+        run_main(sessions, {"hook_event_name": "Notification", "session_id": "abc"})
+        run_main(sessions, {"hook_event_name": "Stop", "session_id": "../evil"})
+        run_main(sessions, {"hook_event_name": "Stop"})
+        self.assertEqual(os.listdir(self.dir.name), [])
+
+    def test_long_titles_and_mcp_tools_are_shortened(self):
+        status = self.send("UserPromptSubmit", prompt="x" * 200)
+        self.assertEqual(len(status["title"]), sessions.TITLE_LENGTH)
+        status = self.send("PreToolUse", tool_name="mcp__tracker__save_issue", tool_input={})
+        self.assertEqual(status["activity"], "Using save issue")
+
+
+class ClaudeProcessTests(unittest.TestCase):
+    def ps(self, table):
+        def run(args, **kwargs):
+            return mock.Mock(stdout=table.get(int(args[-1]), ""))
+        return mock.patch.object(sessions.subprocess, "run", side_effect=run)
+
+    def test_finds_claude_and_its_terminal_past_a_shell(self):
+        table = {
+            100: "  90 ttys003   /bin/zsh\n",
+            90: "  80 ttys003   /Users/me/.local/share/claude/versions/2.1.197\n",
+        }
+        with mock.patch.object(sessions.os, "getppid", return_value=100), self.ps(table):
+            self.assertEqual(sessions.claude_process(), {"pid": 90, "process": "2.1.197", "tty": "/dev/ttys003"})
+
+    def test_a_session_without_a_terminal_has_no_tty(self):
+        table = {100: "  80 ??       /Users/me/Library/Application Support/Claude/claude-code/2.1/claude.app/Contents/MacOS/claude\n"}
+        with mock.patch.object(sessions.os, "getppid", return_value=100), self.ps(table):
+            self.assertEqual(sessions.claude_process(), {"pid": 100, "process": "claude"})
+
+    def test_gives_up_quietly_when_ps_finds_nothing(self):
+        with mock.patch.object(sessions.os, "getppid", return_value=100), self.ps({}):
+            self.assertEqual(sessions.claude_process(), {})
+        with mock.patch.object(sessions.subprocess, "run", side_effect=OSError):
+            self.assertEqual(sessions.claude_process(), {})
 
 
 if __name__ == "__main__":

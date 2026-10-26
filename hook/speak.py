@@ -34,6 +34,9 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
+# "<hook pid> <session_id>" of the reply currently speaking, so the menu bar can mark that session. The app only trusts
+# it while the hook pid matches the owner file.
+SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
 
 
 def is_tool_result_only(content):
@@ -119,6 +122,27 @@ def take_over():
     write_owner(os.getpid())
 
 
+def write_session(session_id):
+    if not isinstance(session_id, str) or not session_id:
+        return
+    temp = f"{SESSION_FILE}.{os.getpid()}"
+    try:
+        with open(temp, "w") as f:
+            f.write(f"{os.getpid()} {session_id}")
+        os.replace(temp, SESSION_FILE)
+    except OSError:
+        pass
+
+
+def clear_session():
+    try:
+        with open(SESSION_FILE) as f:
+            if f.read().split()[:1] == [str(os.getpid())]:
+                os.remove(SESSION_FILE)
+    except OSError:
+        pass
+
+
 def osascript(script):
     result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     return result.stdout.strip()
@@ -177,6 +201,7 @@ def main():
         cmd += ["-r", str(rate)]
 
     take_over()
+    write_session(payload.get("session_id"))
     duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.
@@ -187,6 +212,7 @@ def main():
     if is_owner():
         restore_music()
         os.remove(OWNER_FILE)
+        clear_session()
 
 if __name__ == "__main__":
     main()

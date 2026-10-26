@@ -40,7 +40,7 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 926)
+    static let size = CGSize(width: 470, height: 1042)
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -101,6 +101,13 @@ struct SettingsView: View {
                     Text("Permissions")
                 } footer: {
                     Text("Claude's own prompt still works too, and the first answer counts.")
+                }
+                Section {
+                    Toggle("Show sessions in the menu bar", isOn: showsSessionsInMenuBar)
+                } header: {
+                    Text("Sessions")
+                } footer: {
+                    Text("Lists your open Claude Code sessions. Click one to go to its window.")
                 }
                 Section("General") {
                     ShortcutRecorder(
@@ -237,6 +244,10 @@ struct SettingsView: View {
 
     private var asksForPermission: Binding<Bool> {
         Binding(get: { preferences.asksForPermission }, set: { preferences.setAsksForPermission($0) })
+    }
+
+    private var showsSessionsInMenuBar: Binding<Bool> {
+        Binding(get: { preferences.showsSessionsInMenuBar }, set: { preferences.setShowsSessionsInMenuBar($0) })
     }
 
     private var opensAtLogin: Binding<Bool> {

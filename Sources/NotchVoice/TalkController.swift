@@ -30,6 +30,8 @@ final class TalkController: ObservableObject {
     private static let quickFailure: TimeInterval = 2
     // How long to wait before trying again to listen for the wake phrase, after the microphone couldn't start.
     private static let restartAfter: TimeInterval = 15
+    // How long after a reply stops that its last words can still reach the recognizer, which runs a little behind.
+    private static let echoTail: TimeInterval = 1.5
 
     private let speech = SpeechInput()
     private let preferences: Preferences
@@ -54,7 +56,12 @@ final class TalkController: ObservableObject {
     private var freshening: Timer?
     private var cardTimer: Timer?
     private var fallback: Timer?
+    // NotchVoice is reading a reply aloud, or just was, so the microphone may be hearing it.
+    private var isReplyAudible = false
+    private var ignoredOwnWakePhrase = false
+    private var echoTimer: Timer?
     private var changes: AnyCancellable?
+    private var speakingChanges: AnyCancellable?
 
     init(sessions: SessionStore, voice: VoiceController, preferences: Preferences, dictation: DictationMonitor) {
         self.preferences = preferences
@@ -68,6 +75,9 @@ final class TalkController: ObservableObject {
         )
         .sink { [weak self] listens, hasOrchestrator, isOn in
             MainActor.assumeIsolated { self?.update(listens: listens, hasOrchestrator: hasOrchestrator, isOn: isOn) }
+        }
+        speakingChanges = voice.$isSpeaking.removeDuplicates().sink { [weak self] speaking in
+            MainActor.assumeIsolated { self?.replyPlaying(speaking) }
         }
     }
 
@@ -123,6 +133,29 @@ final class TalkController: ObservableObject {
         default:
             break
         }
+    }
+
+    /// The microphone hears NotchVoice's own replies too, and the orchestrator may well say "Hey Jarvis" in one. So
+    /// while a reply plays, and for a moment after, a wake phrase is taken for part of it. Then the transcript starts
+    /// afresh, so the reply's words can't start a message later.
+    private func replyPlaying(_ speaking: Bool) {
+        echoTimer?.invalidate()
+        echoTimer = nil
+        if speaking {
+            isReplyAudible = true
+            ignoredOwnWakePhrase = false
+            return
+        }
+        guard isReplyAudible else { return }
+        let timer = Timer(timeInterval: Self.echoTail, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isReplyAudible = false
+                if self.phase == .waitingForPhrase { self.freshRequest() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        echoTimer = timer
     }
 
     private func beginWaiting() async {
@@ -230,7 +263,13 @@ final class TalkController: ObservableObject {
         if !text.isEmpty { retryDelay = 0 }
         switch phase {
         case .waitingForPhrase:
-            if let words = TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) { beginCapture(.phrase, words: words) }
+            guard let words = TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) else { break }
+            guard !isReplyAudible else {
+                if !ignoredOwnWakePhrase { log.info("ignored a wake phrase heard while a reply was playing") }
+                ignoredOwnWakePhrase = true
+                break
+            }
+            beginCapture(.phrase, words: words)
         case .capturing(let trigger):
             guard let words = messageWords(in: text, trigger), words != heard else { break }
             heard = words

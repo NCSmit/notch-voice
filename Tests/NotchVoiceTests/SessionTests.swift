@@ -58,6 +58,16 @@ struct SessionTests {
         #expect(list.map(\.started.timeIntervalSince1970) == [40, 10, 20, 30])
     }
 
+    @Test func theOrchestratorComesFirst() throws {
+        let list = ClaudeSession.sorted([
+            try #require(makeSession("waiting", age: 1, started: 10)),
+            try #require(makeSession("idle", age: 1, started: 20)).asOrchestrator,
+            try #require(makeSession("working", age: 1, started: 5)),
+        ])
+        #expect(list.map(\.isOrchestrator) == [true, false, false])
+        #expect(list.map(\.state) == [.idle, .waiting, .working])
+    }
+
     @Test func anInterruptedSessionIsIdle() throws {
         let session = try #require(makeSession("working", extra: ["activity": "Thinking"])).interrupted
         #expect(session.state == .idle)
@@ -155,6 +165,15 @@ struct SessionMenuTests {
         if #available(macOS 14.4, *) {
             #expect(items[1].subtitle == "demo · Speaking…")
         }
+    }
+
+    @Test func theOrchestratorIsMarkedAndCanBeToldToShareTheVoice() {
+        let orchestrator = makeSession("working", title: "/orchestrator", activity: "Briefing").asOrchestrator
+        let items = StatusItemController.menuItems(for: [orchestrator], speakingSession: nil, canOpen: { _ in true }, target: nil)
+        #expect(items.map(\.title) == ["Claude Code Sessions", "Orchestrator", "", "Let Every Session Speak", "Settings…", "Quit NotchVoice"])
+        #expect(items[1].image?.accessibilityDescription == "Orchestrator")
+        let plain = StatusItemController.menuItems(for: [makeSession("working")], speakingSession: nil, canOpen: { _ in true }, target: nil)
+        #expect(!plain.map(\.title).contains("Let Every Session Speak"))
     }
 
     @Test func onlyTerminalAndITermHaveATabToSelect() {

@@ -15,6 +15,12 @@ import subprocess
 import sys
 import tempfile
 
+try:
+    from notchvoice_sessions import orchestrator
+except ImportError:  # installed without the sessions hook, so there is no orchestrator either
+    def orchestrator(check_name=True):
+        return None
+
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
@@ -82,6 +88,16 @@ def load_settings():
     except (OSError, ValueError):
         return {}
     return settings if isinstance(settings, dict) else {}
+
+
+def silenced(payload):
+    """While a session is the orchestrator, only its replies are read aloud. Samples and desktop chats carry no
+    session, so they always speak."""
+    session = payload.get("session_id")
+    if not session:
+        return False
+    boss = orchestrator()
+    return bool(boss) and session != boss
 
 
 def music_level(settings):
@@ -192,6 +208,8 @@ def main():
         return
 
     settings = load_settings()
+    if silenced(payload):
+        return
     cmd = ["say"]
     voice = settings.get("voice") or os.environ.get("CLAUDE_TTS_VOICE")
     if voice:

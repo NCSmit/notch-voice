@@ -12,6 +12,8 @@ Each event rewrites ~/.claude/notchvoice/sessions/<session_id>.json with:
             null when ps couldn't find it, and the app then goes by age)
   app       the bundle id of the app the session runs in, and tty its terminal, so the app can bring it forward
 Async hooks can finish out of order, so an event never overwrites a newer one.
+
+It also decides which session is the orchestrator, for speak.py, the brief hook and the orchestrator's helper.
 """
 import json
 import os
@@ -20,7 +22,10 @@ import subprocess
 import sys
 import time
 
-SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "sessions")
+NOTCHVOICE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice")
+SESSIONS_DIR = os.path.join(NOTCHVOICE_DIR, "sessions")
+# {"session_id": ...} of the session that ran /orchestrator. While that session is open, only its replies are spoken.
+ORCHESTRATOR_FILE = os.path.join(NOTCHVOICE_DIR, "orchestrator.json")
 TITLE_LENGTH = 60
 ACTIVITY_LENGTH = 90
 STATES = {
@@ -35,6 +40,9 @@ STATES = {
 # Tools that stop and wait for an answer, with what to show while they wait.
 WAITING_TOOLS = {"AskUserQuestion": "Needs you: a question", "ExitPlanMode": "Needs you: a plan to approve"}
 SHELLS = {"sh", "bash", "zsh", "dash", "fish"}
+# Without a process to check, a session counts as open for this long after its last event, as in the app.
+IDLE_LIFETIME = 15 * 60
+WORKING_LIFETIME = 2 * 60 * 60
 
 
 def shorten(text, limit):
@@ -104,6 +112,38 @@ def claude_process():
             return found
         pid = parent
     return {}
+
+
+def is_open(status, now=None, check_name=True):
+    """Whether a status file belongs to a session that is still open, decided the same way as the app's menu.
+    Checking the process name guards against a reused pid, but costs a ps call, so frequent callers can skip it."""
+    if not isinstance(status, dict) or status.get("state") not in ("working", "waiting", "idle"):
+        return False
+    pid, process = status.get("pid"), status.get("process")
+    if isinstance(pid, int) and isinstance(process, str):
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            pass
+        except OSError:
+            return False
+        if not check_name:
+            return True
+        info = process_info(pid)
+        return info is not None and info[2] == process
+    try:
+        age = (now or time.time()) - float(status.get("updated") or 0)
+    except (TypeError, ValueError):
+        return False
+    return age < (IDLE_LIFETIME if status.get("state") == "idle" else WORKING_LIFETIME)
+
+
+def orchestrator(check_name=True):
+    """The session id of the orchestrator while it is open, or None when every session speaks."""
+    session = read(ORCHESTRATOR_FILE).get("session_id")
+    if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+        return None
+    return session if is_open(read(os.path.join(SESSIONS_DIR, f"{session}.json")), check_name=check_name) else None
 
 
 def read(path):

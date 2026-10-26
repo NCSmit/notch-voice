@@ -193,6 +193,68 @@ class PermissionHookTests(unittest.TestCase):
         self.assertIsNone(decision)
         self.assertEqual(outcome, "notch app not reachable")
 
+    def fake_app(self, replies, start_after=0.0):
+        """A stand-in for NotchVoice that answers each connection in turn: a reply line, or None to close without
+        answering, as an app that restarts does. Returns the requests it received, filled in as they arrive."""
+        folder = tempfile.TemporaryDirectory(dir="/tmp")
+        self.addCleanup(folder.cleanup)
+        path = os.path.join(folder.name, "s.sock")
+        received = []
+        listening = threading.Event()
+
+        def serve():
+            time.sleep(start_after)
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(path)
+            server.listen(1)
+            listening.set()
+            for reply in replies:
+                connection, _ = server.accept()
+                received.append(connection.recv(4096))
+                if reply is not None:
+                    connection.sendall(reply)
+                connection.close()
+            server.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        patcher = mock.patch.object(permission, "SOCKET", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        if not start_after:
+            listening.wait(2)
+        return received
+
+    def ask(self):
+        return permission.ask_notch({"tool_name": "Bash"}, permission.Transcript(None, "Bash", {}))
+
+    def test_a_card_is_sent_again_when_the_app_restarts_while_it_shows(self):
+        received = self.fake_app([None, b'{"decision":"allow"}\n'])
+        self.assertEqual(self.ask(), ("allow", "notch: allow"))
+        self.assertEqual(len(received), 2)
+        self.assertEqual(received[0], received[1])
+
+    def test_an_app_that_is_still_starting_is_waited_for(self):
+        self.fake_app([b'{"decision":"deny"}\n'], start_after=0.15)
+        self.assertEqual(self.ask(), ("deny", "notch: deny"))
+
+    def test_an_app_that_keeps_stopping_is_given_up_on(self):
+        received = self.fake_app([None] * (permission.RESENDS + 1))
+        self.assertEqual(self.ask(), (None, "notch app kept stopping"))
+        self.assertEqual(len(received), permission.RESENDS + 1)
+
+    def test_answering_in_claude_stops_the_retries(self):
+        received = self.fake_app([None])
+        transcript = permission.Transcript(None, "Bash", {})
+        with mock.patch.object(transcript, "answered_elsewhere", return_value=True):
+            self.assertEqual(permission.ask_notch({"tool_name": "Bash"}, transcript), (None, "answered in Claude"))
+        self.assertEqual(len(received), 1)
+
+    def test_a_reply_that_is_not_an_answer_is_ignored(self):
+        self.fake_app([b'["allow"]\n'])
+        self.assertEqual(self.ask(), (None, "bad reply"))
+
     def test_every_request_is_logged_with_what_happened(self):
         with mock.patch.object(permission, "ask_notch", return_value=(None, "answered in Claude")):
             run_main(permission, {"tool_name": "Bash", "tool_input": {}, "session_id": "s1", "permission_mode": "auto"})

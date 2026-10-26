@@ -19,8 +19,9 @@ final class SpeechInput {
 
     /// The transcript of the current request so far, and whether it is the final one.
     var onText: (String, Bool) -> Void = { _, _ in }
-    /// The current request ended by itself, so a new one is needed to keep listening.
-    var onEnded: () -> Void = {}
+    /// The current request ended by itself, so a new one is needed to keep listening. True when it failed before
+    /// hearing anything, which happens over and over while recognition can't work.
+    var onEnded: (Bool) -> Void = { _ in }
 
     private(set) var isRunning = false
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -28,6 +29,7 @@ final class SpeechInput {
     private let feed = RequestFeed()
     private var task: SFSpeechRecognitionTask?
     private var generation = 0
+    private var requestHeardWords = false
     private var configChanges: NSObjectProtocol?
 
     // These callbacks come on background threads, so none of them may be tied to the main actor; Swift stops the app
@@ -67,7 +69,7 @@ final class SpeechInput {
                 guard let self, self.isRunning else { return }
                 self.stop()
                 try? self.start()
-                self.onEnded()
+                self.onEnded(false)
             }
         }
         newRequest()
@@ -94,6 +96,7 @@ final class SpeechInput {
         task?.cancel()
         generation += 1
         let current = generation
+        requestHeardWords = false
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true
@@ -104,14 +107,18 @@ final class SpeechInput {
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
             let ended = isFinal || error != nil
+            let failed = error != nil
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, current == self.generation else { return }
-                    if let text { self.onText(text, isFinal) }
-                    if ended {
-                        self.task = nil
-                        self.onEnded()
+                    if let text {
+                        if !text.isEmpty { self.requestHeardWords = true }
+                        self.onText(text, isFinal)
                     }
+                    // Handling the text may already have started the next request; this ending is then the old one's.
+                    guard ended, current == self.generation else { return }
+                    self.task = nil
+                    self.onEnded(failed && !self.requestHeardWords)
                 }
             }
         }

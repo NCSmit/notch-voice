@@ -53,7 +53,7 @@ final class TalkController: ObservableObject {
         self.preferences = preferences
         self.dictation = dictation
         speech.onText = { [weak self] text, isFinal in self?.heard(text, isFinal: isFinal) }
-        speech.onEnded = { [weak self] in self?.requestEnded() }
+        speech.onEnded = { [weak self] failed in self?.requestEnded(failed: failed) }
         changes = preferences.$listensForWakePhrase
             .combineLatest(sessions.$sessions.map { $0.contains(where: \.isOrchestrator) }.removeDuplicates())
             .sink { [weak self] listens, hasOrchestrator in
@@ -299,11 +299,12 @@ final class TalkController: ObservableObject {
         freshening = timer
     }
 
-    private func requestEnded() {
+    private func requestEnded(failed: Bool) {
         switch phase {
         case .waitingForPhrase:
-            // A request that ends straight away is failing, not finishing, so wait longer before each new one.
-            if Date().timeIntervalSince(requestStarted) < 2 {
+            // A request that fails straight away without hearing anything will keep failing, so wait longer before
+            // each new one.
+            if failed, Date().timeIntervalSince(requestStarted) < 2 {
                 retryDelay = min(max(retryDelay * 2, 1), 30)
                 log.info("speech recognition stopped at once; trying again in \(self.retryDelay) s")
                 retry?.invalidate()

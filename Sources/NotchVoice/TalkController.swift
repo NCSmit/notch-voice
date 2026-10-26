@@ -83,6 +83,7 @@ final class TalkController: ObservableObject {
 
     func cancel() {
         guard case .capturing = phase else { return }
+        log.info("message not sent: closed with the button")
         endCapture()
         show(.done(message: "Cancelled", isError: false), for: 1.5)
         NSSound(named: "Pop")?.play()
@@ -214,6 +215,7 @@ final class TalkController: ObservableObject {
         case .send:
             finish()
         case .nothingSaid:
+            log.info("message not sent: nothing was said")
             endCapture()
             show(.done(message: "Didn't hear anything", isError: false), for: 1.5)
             NSSound(named: "Pop")?.play()
@@ -247,6 +249,7 @@ final class TalkController: ObservableObject {
     private func send(_ words: String) {
         endCapture()
         guard let message = TalkPhrases.message(from: words) else {
+            log.info("message not sent: \(words.isEmpty ? "nothing was heard" : "it was cancelled", privacy: .public)")
             show(.done(message: words.isEmpty ? "Didn't hear anything" : "Cancelled", isError: false), for: 1.5)
             NSSound(named: "Pop")?.play()
             return
@@ -255,9 +258,11 @@ final class TalkController: ObservableObject {
         Task {
             let failure = await Self.tell(message)
             if let failure {
+                log.info("message not sent: \(failure, privacy: .public)")
                 show(.done(message: failure, isError: true), for: 4)
                 NSSound(named: "Basso")?.play()
             } else {
+                log.info("message sent (\(message.count) characters)")
                 show(.sent, for: 1.5)
                 NSSound(named: "Pop")?.play()
             }

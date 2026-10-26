@@ -71,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LoginItem.enableOnFirstLaunch()
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Wispr Flow may still be about to paste a message's text, which would land in another app once NotchVoice
+        // is gone, so quitting waits for that, a few seconds at most.
+        let waits = talk?.prepareToQuit { NSApp.reply(toApplicationShouldTerminate: true) } ?? false
+        return waits ? .terminateLater : .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         dictation?.stop()
     }

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import NotchVoice
 
@@ -40,6 +41,26 @@ struct TalkPhraseTests {
         #expect(TalkPhrases.message(from: "   ") == nil)
         #expect(TalkPhrases.message(from: "cancel the deploy and run the tests") == "cancel the deploy and run the tests")
     }
+
+    @Test func aCancelWordAtTheEndIsFoundHoweverItIsWritten() {
+        #expect(TalkPhrases.endsWithCancelWord("Please check the tests, and then please cancel."))
+        #expect(TalkPhrases.endsWithCancelWord("Never mind!"))
+        #expect(!TalkPhrases.endsWithCancelWord("Cancel the deploy."))
+        #expect(!TalkPhrases.endsWithCancelWord(""))
+    }
+
+    @Test func theMessageStartsAfterTheLastWakePhrase() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        let words = ["So", "hey", "Jarvis,", "never", "mind.", "Hey,", "Jarvis.", "Run", "the", "tests."].enumerated().map {
+            (text: $1, at: start.addingTimeInterval(Double($0)))
+        }
+        #expect(TalkPhrases.messageStart(in: words, afterWakePhrase: "Jarvis") == start.addingTimeInterval(7))
+        #expect(TalkPhrases.messageStart(in: words, afterWakePhrase: nil) == start)
+        #expect(TalkPhrases.messageStart(in: Array(words.prefix(7)), afterWakePhrase: "Jarvis") == nil)
+        #expect(TalkPhrases.messageStart(in: words, afterWakePhrase: "Friday") == nil)
+        let named = [(text: "hey", at: start), (text: "Mister", at: start), (text: "Robot", at: start), (text: "go", at: start.addingTimeInterval(1))]
+        #expect(TalkPhrases.messageStart(in: named, afterWakePhrase: "Mister Robot") == start.addingTimeInterval(1))
+    }
 }
 
 struct TalkPolicyTests {
@@ -59,6 +80,37 @@ struct TalkPolicyTests {
         #expect(TalkPolicy.decide(.phrase, heard: "", sinceStart: TalkPolicy.waitForWords, sinceLastWords: 7) == .nothingSaid)
         #expect(TalkPolicy.decide(.hold, heard: "a long one", sinceStart: TalkPolicy.longest, sinceLastWords: 0) == .send)
         #expect(TalkPolicy.decide(.hold, heard: "", sinceStart: TalkPolicy.longest, sinceLastWords: 0) == .nothingSaid)
+    }
+
+    @Test func wisprFlowsTextIsSentWhenItHeardTheWholeMessage() {
+        let choice = TalkPolicy.wisprMessage("Run the tests.", apple: "run the test", headStart: -0.6, wakeName: "Jarvis")
+        #expect(choice.words == "Run the tests.")
+        #expect(choice.appleBecause == nil)
+        let small = TalkPolicy.wisprMessage("Run the tests.", apple: "run the test", headStart: TalkPolicy.wisprHeadStart, wakeName: nil)
+        #expect(small.appleBecause == nil)
+    }
+
+    @Test func applesTranscriptIsSentWhenWisprFlowMissedSomething() {
+        let late = TalkPolicy.wisprMessage("the tests.", apple: "run the tests", headStart: 0.4, wakeName: "Jarvis")
+        #expect(late.words == "run the tests")
+        #expect(late.appleBecause?.contains("0.40 s before") == true)
+        let nothing = TalkPolicy.wisprMessage(" ", apple: "run the tests", headStart: -1, wakeName: nil)
+        #expect(nothing.words == "run the tests")
+        #expect(nothing.appleBecause == "Wispr Flow wrote nothing")
+    }
+
+    @Test func eitherTranscriptCanCancel() {
+        let byApple = TalkPolicy.wisprMessage("Run the tests and then cancel the deploy.", apple: "run the tests and then cancel", headStart: -1, wakeName: nil)
+        #expect(TalkPhrases.message(from: byApple.words) == nil)
+        let byWispr = TalkPolicy.wisprMessage("Run the tests. Never mind.", apple: "run the tests never", headStart: -1, wakeName: nil)
+        #expect(byWispr.appleBecause == nil)
+        #expect(TalkPhrases.message(from: byWispr.words) == nil)
+    }
+
+    @Test func wisprFlowsTextKeepsOnlyWhatFollowsTheWakePhrase() {
+        let choice = TalkPolicy.wisprMessage("Hey Jarvis, never mind. Hey Jarvis, run the tests.", apple: "run the tests", headStart: -1, wakeName: "Jarvis")
+        #expect(choice.words == "run the tests.")
+        #expect(TalkPolicy.wisprMessage("Hey Jarvis, go.", apple: "go", headStart: -1, wakeName: nil).words == "Hey Jarvis, go.")
     }
 }
 
@@ -92,5 +144,15 @@ struct RequestTranscriptTests {
         #expect(transcript.heardWords)
         transcript.add("", timing: nil)
         #expect(transcript.heardWords)
+    }
+
+    @Test func wordTimesFollowTheUtterancesThatEnded() {
+        var transcript = RequestTranscript()
+        transcript.add("Run the tests.", timing: 10...11.5, words: [.init(text: "Run", start: 10), .init(text: "the", start: 10.4), .init(text: "tests.", start: 10.7)])
+        transcript.add("Hey Jarvis.", timing: 8.3...8.9, words: [.init(text: "Hey", start: 8.3), .init(text: "Jarvis.", start: 8.5)])
+        transcript.add("And", timing: nil)
+        #expect(transcript.words.map(\.text) == ["Hey", "Jarvis.", "Run", "the", "tests."])
+        transcript.add("Hey Jarvis, run the tests.", timing: 8.3...11.5, words: [.init(text: "Hey", start: 8.3), .init(text: "Jarvis,", start: 8.5)])
+        #expect(transcript.words.map(\.start) == [8.3, 8.5])
     }
 }

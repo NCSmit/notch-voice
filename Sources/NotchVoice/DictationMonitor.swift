@@ -41,6 +41,12 @@ final class DictationMonitor: ObservableObject {
         dictationApps.contains { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
     }
 
+    /// Whether a dictation app is capturing the microphone right now. Always false before macOS 14.2.
+    nonisolated static func isAppCapturing() -> Bool {
+        guard #available(macOS 14.2, *) else { return false }
+        return audioProcesses().contains(where: isDictating)
+    }
+
     func start() {
         try? FileManager.default.removeItem(at: Self.flagFile)
         guard #available(macOS 14.2, *) else { return }
@@ -76,7 +82,7 @@ final class DictationMonitor: ObservableObject {
 
     @available(macOS 14.2, *)
     private func check() {
-        appIsCapturing = Self.audioProcesses().contains(where: Self.isDictating)
+        appIsCapturing = Self.isAppCapturing()
         setCapturing(appIsCapturing || isHeld)
     }
 

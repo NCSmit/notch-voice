@@ -5,13 +5,15 @@ import os
 private let log = Logger(subsystem: "local.notchvoice", category: "talk")
 
 /// Lets the user talk to the orchestrator without its window: by saying "Hey Jarvis", or with the talk shortcut,
-/// held down or pressed. The words are recognised on this Mac and sent through the orchestrator's inbox with
-/// `notchvoice_snapshot.py tell`, so the orchestrator answers out loud. None of it works while NotchVoice is off.
+/// held down or pressed. The words are recognised on this Mac, or written out by Wispr Flow when that is chosen, and
+/// sent through the orchestrator's inbox with `notchvoice_snapshot.py tell`, so the orchestrator answers out loud. None
+/// of it works while NotchVoice is off.
 @MainActor
 final class TalkController: ObservableObject {
     /// What the notch shows while the user talks, and just after.
     enum Card: Equatable {
         case listening(words: String, hint: String)
+        case writing(words: String)
         case sending(words: String)
         case sent
         case done(message: String, isError: Bool)
@@ -34,6 +36,7 @@ final class TalkController: ObservableObject {
     private static let echoTail: TimeInterval = 1.5
 
     private let speech = SpeechInput()
+    private let wispr = WisprFlow()
     private let preferences: Preferences
     private let dictation: DictationMonitor
     private var phase = Phase.off
@@ -62,12 +65,20 @@ final class TalkController: ObservableObject {
     private var echoTimer: Timer?
     private var changes: AnyCancellable?
     private var speakingChanges: AnyCancellable?
+    // Wispr Flow writes out the message being captured: it was asked to listen, or is listening.
+    private var usesWispr = false
+    // When the message being captured began, by Apple's word times, once the utterance with its first word has ended.
+    private var messageStart: Date?
+    // While a message is finishing: Apple's final transcript is in, and what Wispr Flow wrote, "" for nothing.
+    private var appleIsDone = false
+    private var wisprWrote: String?
 
     init(sessions: SessionStore, voice: VoiceController, preferences: Preferences, dictation: DictationMonitor) {
         self.preferences = preferences
         self.dictation = dictation
         speech.onText = { [weak self] text, isFinal in self?.heard(text, isFinal: isFinal) }
         speech.onEnded = { [weak self] failed in self?.requestEnded(failed: failed) }
+        wispr.onStart = { [weak self] listening in self?.wisprStarted(listening) }
         changes = Publishers.CombineLatest3(
             preferences.$listensForWakePhrase,
             sessions.$sessions.map { $0.contains(where: \.isOrchestrator) }.removeDuplicates(),
@@ -247,7 +258,9 @@ final class TalkController: ObservableObject {
         lastWords = Date()
         // Replies wait while the user speaks, the same way they do for dictation apps.
         dictation.hold(true)
-        NSSound(named: "Tink")?.play()
+        usesWispr = startWispr(saidAlready: words)
+        // Words said before Wispr Flow listens would be lost, so with it the sound waits until then.
+        if !usesWispr { NSSound(named: "Tink")?.play() }
         showListening()
         ticker?.invalidate()
         let ticker = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -256,6 +269,42 @@ final class TalkController: ObservableObject {
         RunLoop.main.add(ticker, forMode: .common)
         self.ticker = ticker
         log.info("listening for a message (\(String(describing: trigger)))")
+    }
+
+    /// Asks Wispr Flow to write out the message, when it's chosen. False when Apple's recognizer writes it instead.
+    private func startWispr(saidAlready words: String) -> Bool {
+        guard preferences.transcriber == .wisprFlow, preferences.hasWisprFlow else { return false }
+        let problem: String?
+        if !words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            problem = "the message began before Wispr Flow was asked to listen"
+        } else {
+            problem = wispr.start()
+        }
+        if let problem { log.info("written out on this Mac: \(problem, privacy: .public)") }
+        return problem == nil
+    }
+
+    private func wisprStarted(_ listening: Bool) {
+        guard usesWispr, case .capturing = phase else { return }
+        NSSound(named: "Tink")?.play()
+        if !listening {
+            usesWispr = false
+            log.info("written out on this Mac: Wispr Flow didn't start listening")
+        } else if !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            usesWispr = false
+            wispr.cancel(heardWords: true)
+            log.info("written out on this Mac: the message began before Wispr Flow was listening")
+        } else {
+            log.info("Wispr Flow is listening")
+        }
+    }
+
+    /// Keeps when the message began, by Apple's word times, to tell later whether Wispr Flow heard all of it.
+    private func noteMessageStart(_ trigger: TalkPolicy.Trigger) {
+        guard usesWispr, messageStart == nil else { return }
+        // After the recognizer ended a request mid-message, the next one holds only the message.
+        let name = trigger == .phrase && carried.isEmpty ? preferences.wakeName : nil
+        messageStart = TalkPhrases.messageStart(in: speech.words, afterWakePhrase: name)
     }
 
     private func heard(_ text: String, isFinal: Bool) {
@@ -271,13 +320,15 @@ final class TalkController: ObservableObject {
             }
             beginCapture(.phrase, words: words)
         case .capturing(let trigger):
+            noteMessageStart(trigger)
             guard let words = messageWords(in: text, trigger), words != heard else { break }
             heard = words
             lastWords = Date()
             showListening()
         case .finishing(let trigger):
-            let words = messageWords(in: text, trigger) ?? heard
-            if isFinal { deliver(words) } else { heard = words }
+            noteMessageStart(trigger)
+            heard = messageWords(in: text, trigger) ?? heard
+            if isFinal { appleFinished() }
         case .off:
             break
         }
@@ -308,31 +359,68 @@ final class TalkController: ObservableObject {
         return TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName)
     }
 
-    /// Lets the recognizer settle on its final transcript, then sends it. The partial transcript stands in if the
-    /// final one is slow.
+    /// Lets the recognizer settle on its final transcript, and Wispr Flow write out the message when it is listening,
+    /// then sends it. The partial transcript stands in if the final one is slow.
     private func finish() {
         guard case .capturing(let trigger) = phase else { return }
         phase = .finishing(trigger)
         ticker?.invalidate()
         ticker = nil
         speech.finishRequest()
+        appleIsDone = false
+        wisprWrote = nil
+        if usesWispr {
+            if wispr.isListening { show(.writing(words: heard.trimmingCharacters(in: .whitespacesAndNewlines))) }
+            wispr.finish { [weak self] text in self?.wisprFinished(text) }
+        }
         let fallback = Timer(timeInterval: 1.5, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.deliver(self.heard)
-            }
+            MainActor.assumeIsolated { self?.appleFinished() }
         }
         RunLoop.main.add(fallback, forMode: .common)
         self.fallback = fallback
     }
 
-    /// Sends the message being finished, once.
-    private func deliver(_ words: String) {
+    private func appleFinished() {
         guard case .finishing = phase else { return }
-        send(words)
+        appleIsDone = true
+        deliverIfReady()
     }
 
-    private func send(_ words: String) {
+    private func wisprFinished(_ text: String?) {
+        guard case .finishing = phase else { return }
+        wisprWrote = text ?? ""
+        deliverIfReady()
+    }
+
+    /// Sends the message being finished, once Apple's transcript is in and, when Wispr Flow writes the message, its
+    /// text too.
+    private func deliverIfReady() {
+        guard case .finishing(let trigger) = phase, appleIsDone else { return }
+        guard usesWispr else { return send(heard) }
+        guard let wrote = wisprWrote else { return }
+        // How long the message had been going when Wispr Flow started listening.
+        let headStart = messageStart.flatMap { start in wispr.listeningSince.map { $0.timeIntervalSince(start) } } ?? 0
+        if messageStart != nil { log.info("Wispr Flow started listening \(headStart, format: .fixed(precision: 2)) s into the message") }
+        let choice = TalkPolicy.wisprMessage(wrote, apple: heard, headStart: headStart,
+                                             wakeName: trigger == .phrase ? preferences.wakeName : nil)
+        if let reason = choice.appleBecause { log.info("written out on this Mac: \(reason, privacy: .public)") }
+        send(choice.words, byWispr: choice.appleBecause == nil)
+    }
+
+    /// Ends any message and lets Wispr Flow finish its paste, so it can't land in another app once NotchVoice has
+    /// quit. Calls `done` when that's over; false when there was nothing to wait for.
+    func prepareToQuit(then done: @escaping @MainActor () -> Void) -> Bool {
+        switch phase {
+        case .capturing, .finishing:
+            log.info("message not sent: NotchVoice is quitting")
+            endCapture()
+        case .off, .waitingForPhrase:
+            break
+        }
+        return wispr.whenIdle(done)
+    }
+
+    private func send(_ words: String, byWispr: Bool = false) {
         endCapture()
         guard let message = TalkPhrases.message(from: words) else {
             log.info("message not sent: \(words.isEmpty ? "nothing was heard" : "it was cancelled", privacy: .public)")
@@ -348,7 +436,7 @@ final class TalkController: ObservableObject {
                 show(.done(message: failure, isError: true), for: 4)
                 NSSound(named: "Basso")?.play()
             } else {
-                log.info("message sent (\(message.count) characters)")
+                log.info("message sent (\(message.count) characters, written out \(byWispr ? "by Wispr Flow" : "on this Mac", privacy: .public))")
                 show(.sent, for: 1.5)
                 NSSound(named: "Pop")?.play()
             }
@@ -361,6 +449,11 @@ final class TalkController: ObservableObject {
         ticker = nil
         fallback?.invalidate()
         fallback = nil
+        if usesWispr { wispr.cancel(heardWords: !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+        usesWispr = false
+        messageStart = nil
+        appleIsDone = false
+        wisprWrote = nil
         heard = ""
         carried = ""
         dictation.hold(false)
@@ -415,13 +508,13 @@ final class TalkController: ObservableObject {
         case .capturing:
             // Recognition isn't working, so the message ends with what was heard rather than starting request after
             // request that fails.
-            if failed, Date().timeIntervalSince(requestStarted) < Self.quickFailure { return send(heard) }
+            if failed, Date().timeIntervalSince(requestStarted) < Self.quickFailure { return usesWispr ? finish() : send(heard) }
             // The recognizer ended this request while the user is still talking, so carry on in a new one.
             carried = heard
             requestStarted = Date()
             speech.newRequest()
         case .finishing:
-            deliver(heard)
+            appleFinished()
         case .off:
             break
         }

@@ -10,6 +10,17 @@ enum TalkMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// What writes out a spoken message to the orchestrator. "Hey Jarvis" and the end of a message are always heard by
+/// Apple's recognizer, on this Mac.
+enum Transcriber: String, CaseIterable, Identifiable {
+    /// Apple's speech recognition, on this Mac.
+    case apple
+    /// Wispr Flow, when it's installed.
+    case wisprFlow
+
+    var id: String { rawValue }
+}
+
 @MainActor
 final class Preferences: ObservableObject {
     private static let themeKey = "glowTheme"
@@ -21,6 +32,7 @@ final class Preferences: ObservableObject {
     static let defaultWakeName = "Jarvis"
     private static let talkShortcutKey = "talkShortcut"
     private static let talkModeKey = "talkMode"
+    private static let transcriberKey = "transcriber"
 
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
@@ -32,6 +44,9 @@ final class Preferences: ObservableObject {
     @Published private(set) var wakeName: String
     @Published private(set) var talkShortcut: Shortcut?
     @Published private(set) var talkMode: TalkMode
+    @Published private(set) var transcriber: Transcriber
+    /// Wispr Flow is installed, so it can be chosen to write out messages.
+    @Published private(set) var hasWisprFlow: Bool
     private let muteHotkey: Hotkey
     private let talkHotkey: Hotkey
 
@@ -43,6 +58,8 @@ final class Preferences: ObservableObject {
         listensForWakePhrase = UserDefaults.standard.bool(forKey: Self.wakePhraseKey)
         wakeName = TalkPhrases.cleanName(UserDefaults.standard.string(forKey: Self.wakeNameKey) ?? "") ?? Self.defaultWakeName
         talkMode = UserDefaults.standard.string(forKey: Self.talkModeKey).flatMap(TalkMode.init(rawValue:)) ?? .hold
+        transcriber = UserDefaults.standard.string(forKey: Self.transcriberKey).flatMap(Transcriber.init(rawValue:)) ?? .apple
+        hasWisprFlow = WisprFlow.isAvailable
         self.muteHotkey = muteHotkey
         self.talkHotkey = talkHotkey
         muteShortcut = Self.savedShortcut(Self.muteShortcutKey).flatMap { muteHotkey.register($0) ? $0 : nil }
@@ -63,6 +80,11 @@ final class Preferences: ObservableObject {
     func setTalkMode(_ mode: TalkMode) {
         talkMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: Self.talkModeKey)
+    }
+
+    func setTranscriber(_ transcriber: Transcriber) {
+        self.transcriber = transcriber
+        UserDefaults.standard.set(transcriber.rawValue, forKey: Self.transcriberKey)
     }
 
     func setTalkShortcut(_ shortcut: Shortcut?) -> Bool {
@@ -108,6 +130,7 @@ final class Preferences: ObservableObject {
 
     func refresh() {
         opensAtLogin = LoginItem.isEnabled
+        hasWisprFlow = WisprFlow.isAvailable
     }
 
     private static func savedShortcut(_ key: String) -> Shortcut? {

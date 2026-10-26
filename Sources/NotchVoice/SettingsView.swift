@@ -21,6 +21,8 @@ final class SettingsWindowController {
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        // Otherwise the name field takes focus with its text selected, and a stray key would replace the name.
+        window.makeFirstResponder(nil)
     }
 
     private func makeWindow() -> NSWindow {
@@ -40,12 +42,14 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1042)
+    static let size = CGSize(width: 470, height: 1303)
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
     @State private var catalog = VoiceCatalog.load()
+    @State private var wakeNameDraft = ""
+    @FocusState private var isEditingName: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -109,6 +113,36 @@ struct SettingsView: View {
                 } footer: {
                     Text("Lists your open Claude Code sessions. Click one to go to its window.")
                 }
+                Section {
+                    Toggle("Listen for \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}", isOn: listensForWakePhrase)
+                    LabeledContent("Name") {
+                        TextField("Name", text: $wakeNameDraft, prompt: Text(Preferences.defaultWakeName))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 150)
+                            .focused($isEditingName)
+                            .onSubmit(saveWakeName)
+                            .onChange(of: isEditingName) { _, editing in
+                                if !editing { saveWakeName() }
+                            }
+                            .onDisappear(perform: saveWakeName)
+                    }
+                    ShortcutRecorder(
+                        title: "Talk shortcut",
+                        shortcut: preferences.talkShortcut,
+                        setShortcut: preferences.setTalkShortcut,
+                        pauseShortcut: preferences.pauseTalkShortcut
+                    )
+                    Picker("Talk shortcut works by", selection: talkMode) {
+                        Text("Holding it down").tag(TalkMode.hold)
+                        Text("Pressing it to start").tag(TalkMode.press)
+                    }
+                } header: {
+                    Text("Talk to the orchestrator")
+                } footer: {
+                    Text("Say \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D} or use the shortcut, then speak to the session where you ran /orchestrator. Your words are recognised on this Mac. While listening is on and an orchestrator is open, the microphone stays on.")
+                }
+                .onAppear { wakeNameDraft = preferences.wakeName }
                 Section("General") {
                     ShortcutRecorder(
                         title: "Mute shortcut",
@@ -248,6 +282,19 @@ struct SettingsView: View {
 
     private var showsSessionsInMenuBar: Binding<Bool> {
         Binding(get: { preferences.showsSessionsInMenuBar }, set: { preferences.setShowsSessionsInMenuBar($0) })
+    }
+
+    private var listensForWakePhrase: Binding<Bool> {
+        Binding(get: { preferences.listensForWakePhrase }, set: { preferences.setListensForWakePhrase($0) })
+    }
+
+    private var talkMode: Binding<TalkMode> {
+        Binding(get: { preferences.talkMode }, set: { preferences.setTalkMode($0) })
+    }
+
+    private func saveWakeName() {
+        preferences.setWakeName(wakeNameDraft)
+        wakeNameDraft = preferences.wakeName
     }
 
     private var opensAtLogin: Binding<Bool> {

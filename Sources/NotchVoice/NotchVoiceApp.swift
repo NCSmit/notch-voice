@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessions: SessionStore?
     private var statusItem: StatusItemController?
     private var dictation: DictationMonitor?
+    private var talk: TalkController?
     private var dictationChanges: AnyCancellable?
     private var permissionSetting: AnyCancellable?
 
@@ -39,7 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             voice.setEnabled(!voice.isEnabled)
             self?.notch?.flash()
         }
-        let preferences = Preferences(muteHotkey: muteHotkey)
+        let talkHotkey = Hotkey(
+            action: { [weak self] in self?.talk?.shortcutPressed() },
+            release: { [weak self] in self?.talk?.shortcutReleased() }
+        )
+        let preferences = Preferences(muteHotkey: muteHotkey, talkHotkey: talkHotkey)
         let dictation = DictationMonitor()
         dictationChanges = dictation.$isDictating.sink { dictating in
             MainActor.assumeIsolated { voice.setDictating(dictating) }
@@ -56,9 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sessions = SessionStore()
         sessions.start()
         self.sessions = sessions
+        let talk = TalkController(sessions: sessions, preferences: preferences, dictation: dictation)
+        self.talk = talk
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, talk: talk) { settings.show() }
         statusItem = StatusItemController(sessions: sessions, voice: voice, preferences: preferences) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()

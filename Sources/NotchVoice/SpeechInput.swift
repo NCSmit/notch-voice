@@ -1,0 +1,176 @@
+import AVFoundation
+import CoreAudio
+import Speech
+import os
+
+private let log = Logger(subsystem: "local.notchvoice", category: "talk")
+
+/// Turns what the microphone hears into text, on this Mac only.
+///
+/// One audio engine runs while listening. Each recognition request covers one stretch of speech: a new one starts
+/// when a message starts, after a message is sent, and before Apple's limit of about a minute per request. The
+/// built-in microphone is used when there is one, so Bluetooth headphones aren't switched into call mode, which would
+/// lower the quality of everything they play.
+@MainActor
+final class SpeechInput {
+    enum Problem: Error {
+        case notAllowed, unavailable, microphone(String)
+    }
+
+    /// The transcript of the current request so far, and whether it is the final one.
+    var onText: (String, Bool) -> Void = { _, _ in }
+    /// The current request ended by itself, so a new one is needed to keep listening.
+    var onEnded: () -> Void = {}
+
+    private(set) var isRunning = false
+    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let engine = AVAudioEngine()
+    private let feed = RequestFeed()
+    private var task: SFSpeechRecognitionTask?
+    private var generation = 0
+    private var configChanges: NSObjectProtocol?
+
+    static func authorize() async -> Bool {
+        let speech = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
+        }
+        let microphone = await AVCaptureDevice.requestAccess(for: .audio)
+        return speech && microphone
+    }
+
+    static var isAuthorized: Bool {
+        SFSpeechRecognizer.authorizationStatus() == .authorized && AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
+    func start() throws {
+        guard !isRunning else { return }
+        guard Self.isAuthorized else { throw Problem.notAllowed }
+        guard let recognizer, recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else { throw Problem.unavailable }
+        useBuiltInMicrophone()
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        let feed = self.feed
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in feed.append(buffer) }
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            throw Problem.microphone(error.localizedDescription)
+        }
+        isRunning = true
+        configChanges = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            // A microphone was plugged in or out, which stops the engine. Start again on whatever is there now.
+            MainActor.assumeIsolated {
+                guard let self, self.isRunning else { return }
+                self.stop()
+                try? self.start()
+                self.onEnded()
+            }
+        }
+        newRequest()
+        log.info("listening")
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        isRunning = false
+        generation += 1
+        task?.cancel()
+        task = nil
+        feed.set(nil)
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        if let configChanges { NotificationCenter.default.removeObserver(configChanges) }
+        configChanges = nil
+        log.info("stopped listening")
+    }
+
+    /// Starts a new request, so the transcript from here on holds only what is said from now.
+    func newRequest() {
+        guard isRunning, let recognizer else { return }
+        task?.cancel()
+        generation += 1
+        let current = generation
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.requiresOnDeviceRecognition = true
+        request.addsPunctuation = true
+        request.taskHint = .dictation
+        feed.set(request)
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            let text = result?.bestTranscription.formattedString
+            let isFinal = result?.isFinal ?? false
+            let ended = isFinal || error != nil
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, current == self.generation else { return }
+                    if let text { self.onText(text, isFinal) }
+                    if ended {
+                        self.task = nil
+                        self.onEnded()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Stops feeding the current request so the recognizer settles on its final transcript.
+    func finishRequest() {
+        feed.finish()
+    }
+
+    /// Points the engine at the built-in microphone, if this Mac has one.
+    private func useBuiltInMicrophone() {
+        guard var device = Self.builtInMicrophone(), let unit = engine.inputNode.audioUnit else { return }
+        let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size))
+        if status != noErr { log.error("could not choose the built-in microphone: \(status)") }
+    }
+
+    private static func builtInMicrophone() -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return nil }
+        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &devices) == noErr else { return nil }
+        return devices.first { device in
+            var transport: UInt32 = 0
+            var transportSize = UInt32(MemoryLayout<UInt32>.size)
+            var transportAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                                              mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+            guard AudioObjectGetPropertyData(device, &transportAddress, 0, nil, &transportSize, &transport) == noErr,
+                  transport == kAudioDeviceTransportTypeBuiltIn else { return false }
+            var streams = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioDevicePropertyScopeInput,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var streamsSize: UInt32 = 0
+            return AudioObjectGetPropertyDataSize(device, &streams, 0, nil, &streamsSize) == noErr && streamsSize > 0
+        }
+    }
+}
+
+/// Hands audio from the engine's real-time thread to whichever request is current.
+private final class RequestFeed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+
+    func set(_ request: SFSpeechAudioBufferRecognitionRequest?) {
+        lock.withLock {
+            self.request?.endAudio()
+            self.request = request
+        }
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.withLock { request?.append(buffer) }
+    }
+
+    func finish() {
+        lock.withLock {
+            request?.endAudio()
+            request = nil
+        }
+    }
+}

@@ -6,6 +6,7 @@ struct NotchRootView: View {
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
     let answer: @MainActor (UUID, PermissionResponse) -> Void
+    let cancelTalk: @MainActor () -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
@@ -14,12 +15,14 @@ struct NotchRootView: View {
             isOpen: state.isOpen,
             isEnabled: voice.isEnabled,
             isSpeaking: voice.isSpeaking,
-            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil,
+            isGlowing: voice.isSpeaking || state.isPreviewingGlow || state.prompt != nil || state.talk != nil,
             theme: preferences.theme,
             prompt: state.prompt,
             pendingCount: state.pendingCount,
+            talk: state.talk,
             setEnabled: voice.setEnabled,
             answer: answer,
+            cancelTalk: cancelTalk,
             openSettings: openSettings
         )
     }
@@ -34,13 +37,15 @@ struct NotchView: View {
     let theme: GlowTheme
     let prompt: PermissionPrompt?
     let pendingCount: Int
+    let talk: TalkController.Card?
     let setEnabled: @MainActor (Bool) -> Void
     let answer: @MainActor (UUID, PermissionResponse) -> Void
+    let cancelTalk: @MainActor () -> Void
     let openSettings: @MainActor () -> Void
 
     var body: some View {
-        let isExpanded = isOpen || prompt != nil
-        let size = prompt != nil ? metrics.permissionSize : isOpen ? metrics.openSize : metrics.closedSize
+        let isExpanded = isOpen || prompt != nil || talk != nil
+        let size = prompt != nil ? metrics.permissionSize : talk != nil ? metrics.talkSize : isOpen ? metrics.openSize : metrics.closedSize
         let topRadius = isExpanded ? NotchMetrics.openTopRadius : NotchMetrics.closedTopRadius
         let bottomRadius = isExpanded ? NotchMetrics.openBottomRadius : NotchMetrics.closedBottomRadius
         let showsBody = isExpanded || isGlowing
@@ -59,6 +64,13 @@ struct NotchView: View {
             if let prompt {
                 PermissionCard(prompt: prompt, pendingCount: pendingCount, accent: theme.accent, answer: answer)
                     .id(prompt.id)
+                    .padding(.top, metrics.notch.height)
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
+                        removal: .opacity.animation(.easeIn(duration: 0.1))
+                    ))
+            } else if let talk {
+                TalkCard(card: talk, accent: theme.accent, cancel: cancelTalk)
                     .padding(.top, metrics.notch.height)
                     .transition(.asymmetric(
                         insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.12)),
@@ -215,6 +227,88 @@ struct VoicePanel: View {
     private var status: String {
         if isSpeaking { return "Speaking…" }
         return isEnabled ? "Replies are read aloud" : "Off"
+    }
+}
+
+struct TalkCard: View {
+    let card: TalkController.Card
+    let accent: LinearGradient
+    let cancel: @MainActor () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .symbolEffect(.pulse, isActive: isListening)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(isError ? AnyShapeStyle(Color.orange) : AnyShapeStyle(accent)))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .truncationMode(.head)
+                Text(detail)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if isListening {
+                Button(action: cancel) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Stop without sending")
+                .accessibilityLabel("Stop without sending")
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var isListening: Bool {
+        if case .listening = card { return true }
+        return false
+    }
+
+    private var isError: Bool {
+        if case .done(_, true) = card { return true }
+        return false
+    }
+
+    private var symbol: String {
+        switch card {
+        case .listening: "mic.fill"
+        case .sending: "paperplane.fill"
+        case .sent: "checkmark"
+        case .done(_, let isError): isError ? "exclamationmark" : "xmark"
+        }
+    }
+
+    private var title: String {
+        switch card {
+        case .listening(let words, _): words.isEmpty ? "Listening…" : words
+        case .sending(let words): words
+        case .sent: "Sent to the orchestrator"
+        case .done(let message, _): message
+        }
+    }
+
+    private var detail: String {
+        switch card {
+        case .listening(_, let hint): hint
+        case .sending: "Sending to the orchestrator…"
+        case .sent: "It will answer out loud"
+        case .done: "Nothing was sent"
+        }
     }
 }
 

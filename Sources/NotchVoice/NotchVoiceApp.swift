@@ -27,6 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     private var dictation: DictationMonitor?
     private var talk: TalkController?
+    private var questions: QuestionCenter?
+    private var questionSetting: AnyCancellable?
     private var dictationChanges: AnyCancellable?
     private var permissionSetting: AnyCancellable?
 
@@ -64,9 +66,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.sessions = sessions
         let talk = TalkController(sessions: sessions, voice: voice, preferences: preferences, dictation: dictation)
         self.talk = talk
+        let questions = QuestionCenter()
+        questions.isEnabled = { preferences.answersQuestions }
+        questionSetting = preferences.$answersQuestions.dropFirst().filter { !$0 }.sink { _ in
+            MainActor.assumeIsolated { questions.handBackAll() }
+        }
+        questions.start()
+        self.questions = questions
         let settings = SettingsWindowController(voice: voice, preferences: preferences)
         self.settings = settings
-        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, talk: talk) { settings.show() }
+        notch = NotchController(voice: voice, preferences: preferences, permissions: permissions, talk: talk, questions: questions,
+                                sessions: sessions) { settings.show() }
         statusItem = StatusItemController(sessions: sessions, voice: voice, preferences: preferences) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()

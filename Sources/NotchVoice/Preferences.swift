@@ -26,6 +26,7 @@ final class Preferences: ObservableObject {
     private static let themeKey = "glowTheme"
     private static let muteShortcutKey = "muteShortcut"
     private static let permissionsKey = "asksForPermissionInNotch"
+    private static let questionsKey = "answersQuestionsInNotch"
     private static let menuBarKey = "showsSessionsInMenuBar"
     private static let wakePhraseKey = "listensForWakePhrase"
     private static let wakeNameKey = "wakeName"
@@ -40,6 +41,7 @@ final class Preferences: ObservableObject {
     @Published private(set) var opensAtLogin: Bool
     @Published private(set) var muteShortcut: Shortcut?
     @Published private(set) var asksForPermission: Bool
+    @Published private(set) var answersQuestions: Bool
     @Published private(set) var showsSessionsInMenuBar: Bool
     @Published private(set) var listensForWakePhrase: Bool
     /// The name in the wake phrase, "Hey <name>".
@@ -60,6 +62,7 @@ final class Preferences: ObservableObject {
         theme = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(GlowTheme.init(rawValue:)) ?? .aurora
         opensAtLogin = LoginItem.isEnabled
         asksForPermission = UserDefaults.standard.object(forKey: Self.permissionsKey) as? Bool ?? true
+        answersQuestions = UserDefaults.standard.object(forKey: Self.questionsKey) as? Bool ?? true
         showsSessionsInMenuBar = UserDefaults.standard.object(forKey: Self.menuBarKey) as? Bool ?? true
         listensForWakePhrase = UserDefaults.standard.bool(forKey: Self.wakePhraseKey)
         wakeName = TalkPhrases.cleanName(UserDefaults.standard.string(forKey: Self.wakeNameKey) ?? "") ?? Self.defaultWakeName
@@ -133,6 +136,11 @@ final class Preferences: ObservableObject {
     func setOpensAtLogin(_ enabled: Bool) {
         LoginItem.setEnabled(enabled)
         refresh()
+    }
+
+    func setAnswersQuestions(_ answers: Bool) {
+        answersQuestions = answers
+        UserDefaults.standard.set(answers, forKey: Self.questionsKey)
     }
 
     func setMuteShortcut(_ shortcut: Shortcut?) -> Bool {

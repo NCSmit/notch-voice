@@ -3,17 +3,22 @@ import os
 
 private let log = Logger(subsystem: "local.notchvoice", category: "permissions")
 
-// Listens on a Unix socket for the PermissionRequest hook. Each connection carries one request line and gets one
-// reply line; if the hook goes away first (Claude answered elsewhere or gave up), the connection reports it closed.
+// Listens on a Unix socket for a hook: the PermissionRequest hook, or the question hook on a socket of its own. Each
+// connection carries one request line and gets one reply line; if the hook goes away first (Claude answered elsewhere
+// or gave up), the connection reports it closed.
 final class PermissionServer: @unchecked Sendable {
     static let socketPath = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice.sock").path
 
-    private let queue = DispatchQueue(label: "local.notchvoice.permissions")
+    private let path: String
+    private let queue: DispatchQueue
     private let onRequest: @Sendable (PermissionConnection, Data) -> Void
     private let onClose: @Sendable (PermissionConnection) -> Void
     private var listener: DispatchSourceRead?
 
-    init(onRequest: @escaping @Sendable (PermissionConnection, Data) -> Void, onClose: @escaping @Sendable (PermissionConnection) -> Void) {
+    init(path: String = PermissionServer.socketPath, label: String = "local.notchvoice.permissions",
+         onRequest: @escaping @Sendable (PermissionConnection, Data) -> Void, onClose: @escaping @Sendable (PermissionConnection) -> Void) {
+        self.path = path
+        queue = DispatchQueue(label: label)
         self.onRequest = onRequest
         self.onClose = onClose
     }
@@ -23,7 +28,7 @@ final class PermissionServer: @unchecked Sendable {
     }
 
     private func listen() {
-        let path = Self.socketPath
+        let path = self.path
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return log.error("socket() failed: \(errno)") }
         var address = sockaddr_un()
@@ -104,10 +109,15 @@ final class PermissionConnection: @unchecked Sendable, Identifiable {
     }
 
     func reply(_ decision: String) {
+        reply(json: ["decision": decision])
+    }
+
+    func reply(json: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
         queue.async { [self] in
             guard !isFinished else { return }
             isFinished = true
-            let line = Array("{\"decision\":\"\(decision)\"}\n".utf8)
+            let line = Array(data) + [UInt8(ascii: "\n")]
             _ = line.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
             source?.cancel()
         }

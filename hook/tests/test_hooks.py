@@ -32,6 +32,8 @@ sys.modules["notchvoice_sessions"] = sessions
 speak = load("speak")
 brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
+sys.modules["notchvoice_permission"] = permission
+question = load("notchvoice_question")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
 snapshot = load("notchvoice_snapshot")
@@ -193,9 +195,10 @@ class PermissionHookTests(unittest.TestCase):
         self.assertIsNone(decision)
         self.assertEqual(outcome, "notch app not reachable")
 
-    def fake_app(self, replies, start_after=0.0):
-        """A stand-in for NotchVoice that answers each connection in turn: a reply line, or None to close without
-        answering, as an app that restarts does. Returns the requests it received, filled in as they arrive."""
+    def fake_app(self, replies, start_after=0.0, module=permission):
+        """A stand-in for NotchVoice that answers each connection in turn: a reply line, None to close without
+        answering, as an app that restarts does, or a number of seconds to stay silent before closing. Returns the
+        requests it received, filled in as they arrive."""
         folder = tempfile.TemporaryDirectory(dir="/tmp")
         self.addCleanup(folder.cleanup)
         path = os.path.join(folder.name, "s.sock")
@@ -211,7 +214,9 @@ class PermissionHookTests(unittest.TestCase):
             for reply in replies:
                 connection, _ = server.accept()
                 received.append(connection.recv(4096))
-                if reply is not None:
+                if isinstance(reply, float):
+                    time.sleep(reply)
+                elif reply is not None:
                     connection.sendall(reply)
                 connection.close()
             server.close()
@@ -219,7 +224,7 @@ class PermissionHookTests(unittest.TestCase):
         thread = threading.Thread(target=serve, daemon=True)
         thread.start()
         self.addCleanup(thread.join, 5)
-        patcher = mock.patch.object(permission, "SOCKET", path)
+        patcher = mock.patch.object(module, "SOCKET", path)
         patcher.start()
         self.addCleanup(patcher.stop)
         if not start_after:
@@ -821,6 +826,54 @@ class InboxTests(unittest.TestCase):
         with mock.patch.object(snapshot, "open_sessions", return_value={}), redirect_stdout(io.StringIO()) as out:
             snapshot.wait(mock.Mock(session="boss", timeout=60))
         self.assertEqual([m["text"] for m in json.loads(out.getvalue())["user_said"]], ["Which session needs me?"])
+
+
+class QuestionHookTests(unittest.TestCase):
+    QUESTIONS = [{"question": "Which database?", "header": "Database", "multiSelect": False,
+                  "options": [{"label": "Postgres", "description": "Relational"}, {"label": "SQLite", "description": "A file"}]}]
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patcher = mock.patch.object(permission, "LOG_FILE", os.path.join(self.dir.name, "permissions.log"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    fake_app = PermissionHookTests.fake_app
+
+    def payload(self, **extra):
+        return dict({"tool_name": "AskUserQuestion", "tool_input": {"questions": self.QUESTIONS}, "session_id": "s1"}, **extra)
+
+    def test_an_answer_from_the_notch_goes_back_to_claude_with_the_questions(self):
+        received = self.fake_app([b'{"decision":"answer","answers":{"Which database?":"SQLite"}}\n'], module=question)
+        output = json.loads(run_main(question, self.payload()))["hookSpecificOutput"]
+        self.assertEqual((output["hookEventName"], output["permissionDecision"]), ("PreToolUse", "allow"))
+        self.assertEqual(output["updatedInput"], {"questions": self.QUESTIONS, "answers": {"Which database?": "SQLite"}})
+        self.assertEqual(json.loads(received[0])["questions"], self.QUESTIONS)
+        with open(permission.LOG_FILE) as f:
+            entry = json.loads(f.readline())
+        self.assertEqual((entry["tool"], entry["outcome"]), ("AskUserQuestion", "answered in the notch"))
+
+    def test_claude_asks_itself_when_the_notch_hands_it_back_or_cannot(self):
+        self.fake_app([b'{"decision":"ask"}\n'], module=question)
+        self.assertEqual(run_main(question, self.payload()), "")
+        with mock.patch.object(question, "SOCKET", os.path.join(self.dir.name, "missing.sock")):
+            self.assertEqual(run_main(question, self.payload()), "")
+        self.fake_app([None], module=question)
+        self.assertEqual(question.ask_notch({}), (None, "notch app went away"))
+
+    def test_an_unanswered_question_goes_back_after_its_window(self):
+        self.fake_app([1.0], module=question)
+        self.assertEqual(question.ask_notch({}, window=0.3), (None, "no answer in time"))
+
+    def test_answers_that_are_not_text_are_refused(self):
+        self.fake_app([b'{"decision":"answer","answers":{"Which database?":2}}\n'], module=question)
+        self.assertEqual(question.ask_notch({}), (None, "handed back to Claude"))
+
+    def test_other_tools_and_empty_questions_are_left_alone(self):
+        self.assertEqual(run_main(question, {"tool_name": "Bash", "tool_input": {"command": "ls"}}), "")
+        self.assertEqual(run_main(question, self.payload(tool_input={"questions": []})), "")
+        self.assertFalse(os.path.exists(permission.LOG_FILE))
 
 
 class PullRequestTests(unittest.TestCase):

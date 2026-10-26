@@ -16,7 +16,16 @@ struct NotchMetrics: Equatable {
     var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 58) }
     var permissionSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 152) }
     var talkSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 64) }
-    var windowSize: CGSize { CGSize(width: permissionSize.width + 2 * Self.glowMargin, height: permissionSize.height + Self.glowMargin) }
+    var windowSize: CGSize {
+        let question = questionSize(options: 4)
+        return CGSize(width: max(permissionSize.width, question.width) + 2 * Self.glowMargin,
+                      height: max(permissionSize.height, question.height) + Self.glowMargin)
+    }
+
+    /// A question card grows with its options, of which AskUserQuestion has two to four.
+    func questionSize(options: Int) -> CGSize {
+        CGSize(width: max(540, notch.width + 330), height: notch.height + 112 + CGFloat(min(max(options, 2), 4)) * 36)
+    }
 
     @MainActor
     static func target() -> (screen: NSScreen, metrics: NotchMetrics)? {
@@ -39,12 +48,18 @@ final class NotchState: ObservableObject {
     @Published var prompt: PermissionPrompt?
     @Published var pendingCount = 0
     @Published var talk: TalkController.Card?
+    @Published var question: QuestionPrompt?
+    @Published var questionProgress = QuestionProgress(count: 0)
+    @Published var questionFrom = ""
+    @Published var canGoToQuestion = false
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
 @MainActor
 final class NotchController {
     private let voice: VoiceController
+    private let questions: QuestionCenter
+    private let sessions: SessionStore
     private let state = NotchState()
     private let panel = NotchPanel()
     private var screenFrame = CGRect.zero
@@ -57,13 +72,24 @@ final class NotchController {
     private var themeChanges: AnyCancellable?
     private var permissionChanges: AnyCancellable?
     private var talkChanges: AnyCancellable?
+    private var questionChanges: AnyCancellable?
     private var glowPreview = 0
 
     init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, talk: TalkController,
-         openSettings: @escaping @MainActor () -> Void) {
+         questions: QuestionCenter, sessions: SessionStore, openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
+        self.questions = questions
+        self.sessions = sessions
+        let questionActions = QuestionActions(
+            toggle: { [weak self] in self?.pickOption($0) },
+            setOther: { [weak self] in self?.setOther($0) },
+            back: { [weak self] in self?.previousQuestion() },
+            next: { [weak self] in self?.nextQuestion() },
+            handBack: { [weak self] in self?.handBackQuestion() },
+            goToSession: { [weak self] in self?.goToQuestionSession() }
+        )
         let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer,
-                                 cancelTalk: talk.cancel, openSettings: openSettings)
+                                 cancelTalk: talk.cancel, questionActions: questionActions, openSettings: openSettings)
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
         panel.contentView = host
@@ -80,6 +106,9 @@ final class NotchController {
         }
         talkChanges = talk.$card.removeDuplicates().sink { [weak self] card in
             MainActor.assumeIsolated { self?.showTalk(card) }
+        }
+        questionChanges = questions.$queue.sink { [weak self] queue in
+            MainActor.assumeIsolated { self?.showQuestion(queue.first) }
         }
         let center = NotificationCenter.default
         observers = [
@@ -112,6 +141,12 @@ final class NotchController {
 
     private var permissionZone: CGRect {
         let size = state.metrics.permissionSize
+        return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
+    }
+
+    private var questionZone: CGRect {
+        let options = state.question.map { $0.questions[state.questionProgress.index].options.count } ?? 4
+        let size = state.metrics.questionSize(options: options)
         return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
     }
 
@@ -155,6 +190,10 @@ final class NotchController {
         }
         if state.talk != nil {
             setInteractive(talkZone.contains(mouse))
+            return
+        }
+        if state.question != nil {
+            setInteractive(questionZone.contains(mouse))
             return
         }
         if state.isOpen {
@@ -224,6 +263,96 @@ final class NotchController {
         }
     }
 
+    // MARK: Questions
+
+    private func showQuestion(_ prompt: QuestionPrompt?) {
+        guard prompt?.id != state.question?.id else { return }
+        let wasShown = state.question != nil
+        let session = prompt?.sessionID.flatMap { id in sessions.sessions.first { $0.id == id } }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            state.question = prompt
+            state.questionProgress = QuestionProgress(count: prompt?.questions.count ?? 0)
+            state.questionFrom = session?.title ?? prompt.flatMap { Self.folder(of: $0.cwd) } ?? "A session"
+            state.canGoToQuestion = session.map(SessionOpener.canOpen) ?? false
+            if prompt != nil { state.isOpen = false }
+        }
+        voice.stopAnnouncement()
+        if prompt != nil {
+            // Only now can the panel take the keyboard, so "Other…" can be typed into; the app stays in the background.
+            panel.allowsKey = true
+            startTracking()
+            announceQuestion(from: session?.project ?? prompt.flatMap { Self.folder(of: $0.cwd) })
+        } else if wasShown {
+            panel.allowsKey = false
+            if panel.isKeyWindow {
+                // Hands the keyboard back to the app the user was in.
+                panel.orderOut(nil)
+                panel.orderFrontRegardless()
+            }
+            setInteractive(false)
+            track()
+        }
+    }
+
+    private func announceQuestion(from project: String? = nil) {
+        guard let prompt = state.question else { return }
+        let question = prompt.questions[state.questionProgress.index]
+        let options = question.options.enumerated().map { "Option \($0.offset + 1): \($0.element.label)." }
+        let intro = project.map { "A question from \($0). " } ?? ""
+        voice.announce(intro + question.text + " " + options.joined(separator: " "))
+    }
+
+    private func pickOption(_ index: Int) {
+        guard let prompt = state.question else { return }
+        let current = state.questionProgress.index
+        if prompt.questions[current].multiSelect {
+            if state.questionProgress.picks[current].contains(index) {
+                state.questionProgress.picks[current].remove(index)
+            } else {
+                state.questionProgress.picks[current].insert(index)
+            }
+        } else {
+            state.questionProgress.picks[current] = [index]
+            state.questionProgress.other[current] = ""
+            nextQuestion()
+        }
+    }
+
+    private func setOther(_ text: String) {
+        guard state.question != nil else { return }
+        state.questionProgress.other[state.questionProgress.index] = text
+    }
+
+    private func previousQuestion() {
+        guard state.questionProgress.index > 0 else { return }
+        state.questionProgress.index -= 1
+    }
+
+    private func nextQuestion() {
+        guard let prompt = state.question else { return }
+        let progress = state.questionProgress
+        if progress.index < prompt.questions.count - 1 {
+            withAnimation(.easeInOut(duration: 0.2)) { state.questionProgress.index += 1 }
+            announceQuestion()
+        } else {
+            questions.answer(prompt.id, answers: QuestionPrompt.answers(for: prompt.questions, picks: progress.picks, other: progress.other))
+        }
+    }
+
+    private func handBackQuestion() {
+        guard let prompt = state.question else { return }
+        questions.handBack(prompt.id)
+    }
+
+    private func goToQuestionSession() {
+        guard let id = state.question?.sessionID, let session = sessions.sessions.first(where: { $0.id == id }) else { return }
+        SessionOpener.open(session)
+    }
+
+    private static func folder(of cwd: String?) -> String? {
+        cwd.map { URL(filePath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     private func previewGlow() {
         glowPreview += 1
         let preview = glowPreview
@@ -255,7 +384,9 @@ final class NotchPanel: NSPanel {
         animationBehavior = .none
     }
 
-    override var canBecomeKey: Bool { false }
+    /// True only while a question card is up, so its text field can be typed into.
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }

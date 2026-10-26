@@ -9,7 +9,7 @@ struct ClaudeSession: Identifiable, Equatable {
     }
 
     let id: String
-    let title: String
+    private(set) var title: String
     let project: String
     private(set) var activity: String
     private(set) var state: State
@@ -23,6 +23,8 @@ struct ClaudeSession: Identifiable, Equatable {
     let process: String?
     let app: String?
     let tty: String?
+    /// The Claude desktop app's id for the session, when it runs there.
+    private(set) var desktopID: String?
 
     // Used only when the hook couldn't find the session's process: a finished session stays listed for a while,
     // and one that is working but silent this long has likely crashed.
@@ -57,6 +59,22 @@ struct ClaudeSession: Identifiable, Equatable {
         var session = self
         session.state = .idle
         session.activity = "Interrupted"
+        return session
+    }
+
+    /// Takes the session's name and desktop app id from Claude Code's own registry entry for its process. The entry
+    /// isn't documented, so anything missing or for another session leaves the session as it was. A name Claude Code
+    /// derived from the folder says less than the first prompt, so it is skipped.
+    func naming(from registry: [String: Any]) -> ClaudeSession {
+        guard registry["sessionId"] as? String == id else { return self }
+        var session = self
+        if let name = (registry["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+           registry["nameSource"] as? String != "derived" {
+            session.title = name
+        }
+        if let host = registry["hostSessionId"] as? String, host.wholeMatch(of: /local_[0-9a-f-]+/) != nil {
+            session.desktopID = host
+        }
         return session
     }
 
@@ -125,6 +143,8 @@ final class SessionStore: ObservableObject {
     static let directory = URL.homeDirectory.appending(path: ".claude/notchvoice/sessions")
     // Written by the orchestrator skill's claim; it sits next to the sessions folder, so that folder is watched too.
     static let orchestratorFile = URL.homeDirectory.appending(path: ".claude/notchvoice/orchestrator.json")
+    // Claude Code's own record of each running session, one <pid>.json per process.
+    static let registryDirectory = URL.homeDirectory.appending(path: ".claude/sessions")
     // Status files of sessions that ended or went quiet this long ago are deleted.
     private static let pruneAge: TimeInterval = 24 * 60 * 60
     // A session that stops without a hook saying so (closed, crashed or interrupted) leaves the list within this long.
@@ -165,7 +185,10 @@ final class SessionStore: ObservableObject {
         }
         let orchestrator = (try? Data(contentsOf: Self.orchestratorFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["session_id"] as? String
-        let sorted = ClaudeSession.sorted(found.map { $0.id == orchestrator ? $0.asOrchestrator : $0 })
+        let sorted = ClaudeSession.sorted(found.map { session in
+            let named = session.pid.map { session.naming(from: Self.registry(of: $0)) } ?? session
+            return named.id == orchestrator ? named.asOrchestrator : named
+        })
         if sorted.count != sessions.count { log.info("sessions: \(sorted.count)") }
         if sorted != sessions { sessions = sorted }
         schedule(every: sorted.contains { $0.state != .idle } ? Self.busyCheckInterval : Self.idleCheckInterval)
@@ -177,6 +200,11 @@ final class SessionStore: ObservableObject {
         guard session.state != .idle, now.timeIntervalSince(session.updated) > interruptDelay,
               let transcript = session.transcript, let interrupt = Transcript.lastInterrupt(in: transcript) else { return false }
         return interrupt > session.updated
+    }
+
+    private static func registry(of pid: pid_t) -> [String: Any] {
+        let file = registryDirectory.appending(path: "\(pid).json")
+        return (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
     }
 
     /// Whether the hook's process is still running. Comparing names guards against a reused pid.

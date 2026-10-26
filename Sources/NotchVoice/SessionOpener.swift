@@ -3,7 +3,8 @@ import os
 
 private let log = Logger(subsystem: "local.notchvoice", category: "sessions")
 
-/// Brings a session forward: its own tab in Terminal or iTerm2, otherwise the app it runs in.
+/// Brings a session forward: the session itself in the Claude desktop app, its own tab in Terminal or iTerm2, otherwise
+/// the app it runs in.
 @MainActor
 enum SessionOpener {
     static let terminal = "com.apple.Terminal"
@@ -17,6 +18,16 @@ enum SessionOpener {
 
     static func open(_ session: ClaudeSession) {
         guard let app = runningApp(of: session), let appURL = app.bundleURL else { return }
+        if let desktopID = session.desktopID, let link = desktopLink(desktopID) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.open(link, configuration: configuration) { _, error in
+                guard let error else { return }
+                log.error("could not open the session in the Claude app: \(error.localizedDescription)")
+                DispatchQueue.main.async { MainActor.assumeIsolated { activate(appURL) } }
+            }
+            return
+        }
         guard let tty = session.tty, tty.hasPrefix("/dev/tty"), let script = tabScript(for: app.bundleIdentifier) else {
             return activate(appURL)
         }
@@ -48,6 +59,12 @@ enum SessionOpener {
             log.error("could not run osascript: \(error.localizedDescription)")
             activate(appURL)
         }
+    }
+
+    /// The link the Claude desktop app opens a session with, the same one its own session list hands out.
+    static func desktopLink(_ desktopID: String) -> URL? {
+        guard desktopID.wholeMatch(of: /local_[0-9a-f-]+/) != nil else { return nil }
+        return URL(string: "claude://claude.ai/epitaxy/\(desktopID)")
     }
 
     static func tabScript(for bundleID: String?) -> String? {

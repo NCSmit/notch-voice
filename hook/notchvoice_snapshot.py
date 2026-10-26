@@ -6,6 +6,10 @@
                                              turns, context size, flags
   notchvoice_snapshot.py learn [--days 7]    user prompts from recent transcripts across all projects, with likely
                                              corrections marked, for the learning loop
+  notchvoice_snapshot.py prs [--all]         pull request status for open sessions outside the Claude desktop app
+                                             (all of them with --all): the PR the session opened, else the one for its
+                                             folder's branch, from one `gh pr view` each; the desktop app's own tools
+                                             give it for its sessions without asking GitHub
   notchvoice_snapshot.py claim | release     make this session the orchestrator, so NotchVoice reads only its replies
                                              aloud, or stop being it
   notchvoice_snapshot.py wait                block until another session finishes a reply or needs the user, then
@@ -16,10 +20,13 @@ instructions.
 """
 import argparse
 import calendar
+import concurrent.futures
 import glob
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 
@@ -46,6 +53,7 @@ SECRETISH = [
 LONG_TOKEN = re.compile(r"(?<![\w/+=.-])[A-Za-z0-9+/=_.-]{32,}(?![\w/+=.-])")
 UUID = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
+PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 
 
 def tail_entries(path, limit=TAIL_BYTES):
@@ -198,17 +206,116 @@ def sessions(args):
             "state": status.get("state"),
             "minutes_since_update": int((time.time() - updated) / 60),
             "title": status.get("title"),
+            "name": None,
+            "desktop_session_id": None,
             "project": status.get("project"),
             "activity": status.get("activity"),
             "cwd": status.get("cwd"),
             "app": status.get("app"),
             "transcript_path": status.get("transcript_path"),
         }
+        record.update(status_files.registry(session_id, status))
         if status.get("transcript_path"):
             record.update(summarize_transcript(status["transcript_path"], updated))
             if record["interrupted"] and record["state"] != "idle":
                 record["state"], record["activity"] = "idle", "Interrupted"
         out.append(record)
+    print(json.dumps(out, indent=1))
+
+
+def gh_path():
+    # The Claude desktop app starts commands with a short PATH, so look where Homebrew puts gh as well.
+    return shutil.which("gh") or next((p for p in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh") if os.path.exists(p)), None)
+
+
+def check_counts(rollup):
+    """Check results in the same shape as the Claude desktop app's PR status. Review bots are checks like any other."""
+    counts = {"passing": 0, "failing": 0, "pending": 0, "skipped": 0, "failingChecks": []}
+    for check in rollup or []:
+        status = (check.get("status") or "").upper()
+        conclusion = (check.get("conclusion") or check.get("state") or "").upper()
+        if status and status != "COMPLETED" or conclusion in ("PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS"):
+            counts["pending"] += 1
+        elif conclusion in ("SUCCESS", "NEUTRAL"):
+            counts["passing"] += 1
+        elif conclusion in ("SKIPPED", "CANCELLED", "STALE"):
+            counts["skipped"] += 1
+        else:
+            counts["failing"] += 1
+            counts["failingChecks"].append(check.get("name") or check.get("context") or "a check")
+    return counts
+
+
+def opened_pr(transcript):
+    """The last pull request the session opened itself, from what its `gh pr create` printed."""
+    commands, found = {}, None
+    for entry in tail_entries(transcript):
+        content = (entry.get("message") or {}).get("content")
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                commands[block.get("id")] = str((block.get("input") or {}).get("command", ""))
+            elif block.get("type") == "tool_result" and "gh pr create" in commands.get(block.get("tool_use_id"), ""):
+                body = block.get("content")
+                urls = PR_URL.findall(body if isinstance(body, str) else text_of(body))
+                found = urls[-1] if urls else found
+    return found
+
+
+def pull_request(target):
+    """The pull request at a URL, or for the branch checked out in a folder. None when there is none or gh can't tell."""
+    kind, value = target
+    gh = gh_path()
+    if not gh or not value or (kind == "folder" and not os.path.isdir(value)):
+        return None
+    fields = "number,title,url,state,isDraft,headRefName,baseRefName,reviewDecision,mergeStateStatus,statusCheckRollup"
+    command = [gh, "pr", "view", value, "--json", fields] if kind == "url" else [gh, "pr", "view", "--json", fields]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20, cwd=value if kind == "folder" else None)
+        data = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("number"):
+        return None
+    return {
+        "number": data["number"],
+        "url": data.get("url"),
+        "title": data.get("title"),
+        "state": (data.get("state") or "").lower(),
+        "draft": bool(data.get("isDraft")),
+        "head": data.get("headRefName"),
+        "base": data.get("baseRefName"),
+        "checks": check_counts(data.get("statusCheckRollup")),
+        "reviewDecision": data.get("reviewDecision") or None,
+        "mergeStateStatus": data.get("mergeStateStatus"),
+    }
+
+
+def prs(args):
+    chosen = {}
+    for session_id, status in open_sessions(args.skip).items():
+        found = status_files.registry(session_id, status)
+        if args.all or not found.get("desktop_session_id"):
+            opened = opened_pr(status["transcript_path"]) if status.get("transcript_path") else None
+            # A session's folder isn't always the repo it works in, so a PR it opened beats its folder's branch.
+            chosen[session_id] = (status, found, ("url", opened) if opened else ("folder", status.get("cwd")))
+    targets = {target for _, _, target in chosen.values() if target[1]}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        results = dict(zip(targets, pool.map(pull_request, targets)))
+    out = []
+    for session_id, (status, found, target) in chosen.items():
+        pr = results.get(target)
+        if pr and target[0] == "folder" and pr["state"] != "open":
+            pr = None  # a finished PR on the folder's branch is most likely left over from earlier work
+        out.append({
+            "session_id": session_id,
+            "name": found.get("name") or status.get("title"),
+            "desktop_session_id": found.get("desktop_session_id"),
+            "cwd": status.get("cwd"),
+            "pr": pr,
+            "pr_from": "opened by the session" if target[0] == "url" else "the folder's branch",
+        })
     print(json.dumps(out, indent=1))
 
 
@@ -302,6 +409,10 @@ def main():
     s = sub.add_parser("sessions")
     s.add_argument("--self", dest="skip", default=this_session())
     s.set_defaults(func=sessions)
+    pr = sub.add_parser("prs")
+    pr.add_argument("--self", dest="skip", default=this_session())
+    pr.add_argument("--all", action="store_true")
+    pr.set_defaults(func=prs)
     l = sub.add_parser("learn")
     l.add_argument("--days", type=float, default=7)
     l.add_argument("--max", type=int, default=40)

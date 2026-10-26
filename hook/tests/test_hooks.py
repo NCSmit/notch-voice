@@ -415,6 +415,11 @@ class SessionTests(unittest.TestCase):
         self.send("PreToolUse", tool_name="Read", tool_input={})
         self.assertEqual(sessions.claude_process.call_count, 1)
 
+    def test_a_note_added_before_the_prompt_is_not_the_title(self):
+        status = self.send("UserPromptSubmit", prompt="<system-reminder>Started by another session</system-reminder> Fix it")
+        self.assertNotIn("title", status)
+        self.assertEqual(self.send("UserPromptSubmit", prompt="Fix the login bug")["title"], "Fix the login bug")
+
     def test_keeps_when_the_session_started(self):
         with mock.patch.object(sessions.time, "time", return_value=100.0):
             self.send("SessionStart", source="startup")
@@ -660,6 +665,95 @@ class SnapshotTests(unittest.TestCase):
                 redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
             snapshot.wait(mock.Mock(session="me", timeout=0.01))
         self.assertEqual(stop.exception.code, 2)
+
+
+class PullRequestTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        for name, sub in (("SESSIONS_DIR", "sessions"), ("REGISTRY_DIR", "registry")):
+            os.makedirs(os.path.join(self.dir.name, sub))
+            patcher = mock.patch.object(sessions, name, os.path.join(self.dir.name, sub))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def write(self, sub, name, data):
+        path = os.path.join(self.dir.name, sub, name)
+        with open(path, "w") as f:
+            f.write(data if isinstance(data, str) else json.dumps(data))
+        return path
+
+    def test_reads_the_name_and_desktop_id_from_claude_codes_registry(self):
+        self.write("registry", "42.json", {"sessionId": "abc", "name": " Notch review ", "nameSource": "user",
+                                           "hostSessionId": "local_447c04a4-b726-4ce0-9e31-77062bf86260"})
+        self.assertEqual(sessions.registry("abc", {"pid": 42}),
+                         {"name": "Notch review", "desktop_session_id": "local_447c04a4-b726-4ce0-9e31-77062bf86260"})
+
+    def test_ignores_derived_names_other_sessions_and_odd_ids(self):
+        self.write("registry", "42.json", {"sessionId": "abc", "name": "orch-7a", "nameSource": "derived", "hostSessionId": "../x"})
+        self.assertEqual(sessions.registry("abc", {"pid": 42}), {})
+        self.assertEqual(sessions.registry("other", {"pid": 42}), {})
+        self.assertEqual(sessions.registry("abc", {"pid": None}), {})
+        self.assertEqual(sessions.registry("abc", {"pid": 7}), {})
+
+    def test_counts_checks_like_the_desktop_app(self):
+        rollup = [
+            {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"name": "Cursor Bugbot", "status": "IN_PROGRESS", "conclusion": ""},
+            {"name": "deploy", "status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"context": "ci/legacy", "state": "ERROR"},
+        ]
+        self.assertEqual(snapshot.check_counts(rollup),
+                         {"passing": 1, "failing": 2, "pending": 1, "skipped": 1, "failingChecks": ["lint", "ci/legacy"]})
+
+    def test_finds_the_pr_a_session_opened(self):
+        transcript = self.write("sessions", "t.jsonl", "\n".join(json.dumps(e) for e in [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "a", "name": "Bash", "input": {"command": "gh pr view 3"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a", "content": "https://github.com/o/r/pull/3"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "gh pr create --fill"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b",
+                                                      "content": [{"type": "text", "text": "https://github.com/o/r/pull/12\n"}]}]}},
+        ]))
+        self.assertEqual(snapshot.opened_pr(transcript), "https://github.com/o/r/pull/12")
+
+    def test_asks_gh_and_shapes_the_answer(self):
+        answer = {"number": 12, "title": "Fix it", "url": "https://github.com/o/r/pull/12", "state": "OPEN", "isDraft": False,
+                  "headRefName": "fix", "baseRefName": "main", "reviewDecision": "", "mergeStateStatus": "BLOCKED",
+                  "statusCheckRollup": [{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]}
+        with mock.patch.object(snapshot, "gh_path", return_value="/usr/bin/gh"), \
+                mock.patch.object(snapshot.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=json.dumps(answer))) as run:
+            pr = snapshot.pull_request(("url", "https://github.com/o/r/pull/12"))
+        self.assertEqual(run.call_args.args[0][:4], ["/usr/bin/gh", "pr", "view", "https://github.com/o/r/pull/12"])
+        self.assertEqual((pr["number"], pr["state"], pr["reviewDecision"], pr["checks"]["failingChecks"]), (12, "open", None, ["lint"]))
+        with mock.patch.object(snapshot, "gh_path", return_value="/usr/bin/gh"), \
+                mock.patch.object(snapshot.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="")):
+            self.assertIsNone(snapshot.pull_request(("folder", self.dir.name)))
+        with mock.patch.object(snapshot, "gh_path", return_value=None):
+            self.assertIsNone(snapshot.pull_request(("folder", self.dir.name)))
+
+    def test_lists_prs_for_sessions_outside_the_desktop_app(self):
+        alive = {"state": "idle", "updated": time.time(), "pid": 42, "process": "claude"}
+        folder = self.dir.name
+        self.write("sessions", "term.json", dict(alive, cwd=folder, title="Terminal work"))
+        self.write("sessions", "twin.json", dict(alive, cwd=folder, title="Same folder", pid=43))
+        self.write("sessions", "desk.json", dict(alive, cwd=folder, pid=44))
+        self.write("registry", "44.json", {"sessionId": "desk", "name": "Desktop work", "hostSessionId": "local_ab12"})
+        merged = {"number": 9, "state": "merged", "checks": {}}
+        with mock.patch.object(sessions, "is_open", return_value=True), \
+                mock.patch.object(snapshot, "pull_request", return_value=dict(merged, state="open")) as lookup, \
+                redirect_stdout(io.StringIO()) as out:
+            snapshot.prs(argparse.Namespace(skip="me", all=False))
+        records = json.loads(out.getvalue())
+        self.assertEqual(sorted(r["session_id"] for r in records), ["term", "twin"])
+        self.assertEqual(lookup.call_count, 1)
+        self.assertEqual({r["pr_from"] for r in records}, {"the folder's branch"})
+        with mock.patch.object(sessions, "is_open", return_value=True), \
+                mock.patch.object(snapshot, "pull_request", return_value=merged), redirect_stdout(io.StringIO()) as out:
+            snapshot.prs(argparse.Namespace(skip="me", all=True))
+        records = {r["session_id"]: r for r in json.loads(out.getvalue())}
+        self.assertEqual(records["desk"]["name"], "Desktop work")
+        self.assertIsNone(records["term"]["pr"])
 
 if __name__ == "__main__":
     unittest.main()

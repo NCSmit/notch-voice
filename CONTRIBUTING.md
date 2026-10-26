@@ -11,7 +11,7 @@ Thanks for helping out. NotchVoice is a small project, so focused pull requests 
   - `notchvoice_brief.py` is the `UserPromptSubmit` hook. It asks Claude to keep spoken replies short.
   - `notchvoice_sessions.py` runs on every session event and keeps a status file per session for the menu bar. It also decides which session is the orchestrator, for the other hooks.
   - `notchvoice_handoff.py` is a `SessionStart` hook for compactions only. It hands a session back the working state it saved.
-- **`orchestrator/SKILL.md`** is the `/orchestrator` skill. Its helper, **`hook/notchvoice_snapshot.py`**, does the deterministic work: it lists open sessions with a summary of each transcript, claims and releases the orchestrator, and waits for sessions to change.
+- **`orchestrator/SKILL.md`** is the `/orchestrator` skill. Its helper, **`hook/notchvoice_snapshot.py`**, does the deterministic work: it lists open sessions with a summary of each transcript, looks up pull requests for sessions outside the Claude desktop app, claims and releases the orchestrator, and waits for sessions to change.
 - **`hook/notchvoice_mcp.py`** is a small MCP server for chats in the Claude desktop app. Its `speak` tool runs `speak.py` with the text Claude passes in.
 - **`hook/notchvoice_desktop.py`** adds that server to the desktop app's config for `install.sh`, or removes it. The desktop app rewrites its config while it's open, so when it's open the script makes the change again after the app quits.
 - **`Tests/`** and **`hook/tests/`** hold the tests for the app and the hooks.

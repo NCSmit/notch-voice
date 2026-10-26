@@ -26,6 +26,10 @@ NOTCHVOICE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice")
 SESSIONS_DIR = os.path.join(NOTCHVOICE_DIR, "sessions")
 # {"session_id": ...} of the session that ran /orchestrator. While that session is open, only its replies are spoken.
 ORCHESTRATOR_FILE = os.path.join(NOTCHVOICE_DIR, "orchestrator.json")
+# Claude Code's own record of each running session, one <pid>.json per process. It isn't documented, so everything
+# read from it is optional.
+REGISTRY_DIR = os.path.join(os.path.expanduser("~"), ".claude", "sessions")
+DESKTOP_ID = re.compile(r"local_[0-9a-f-]+")
 TITLE_LENGTH = 60
 ACTIVITY_LENGTH = 90
 STATES = {
@@ -146,6 +150,23 @@ def orchestrator(check_name=True):
     return session if is_open(read(os.path.join(SESSIONS_DIR, f"{session}.json")), check_name=check_name) else None
 
 
+def registry(session, status):
+    """The session's name and the Claude desktop app's id for it, from Claude Code's registry. A name Claude Code
+    derived from the folder says less than the session's first prompt, so it is left out."""
+    pid = status.get("pid") if isinstance(status, dict) else None
+    entry = read(os.path.join(REGISTRY_DIR, f"{pid}.json")) if isinstance(pid, int) else {}
+    if entry.get("sessionId") != session:
+        return {}
+    found = {}
+    name = entry.get("name")
+    if isinstance(name, str) and name.strip() and entry.get("nameSource") != "derived":
+        found["name"] = name.strip()
+    host = entry.get("hostSessionId")
+    if isinstance(host, str) and DESKTOP_ID.fullmatch(host):
+        found["desktop_session_id"] = host
+    return found
+
+
 def read(path):
     try:
         with open(path) as f:
@@ -182,7 +203,8 @@ def updated_status(previous, payload, now, process=None):
         status["project"] = os.path.basename(payload["cwd"].rstrip("/")) or payload["cwd"]
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt") or ""
-        if not status.get("title") and prompt.strip():
+        # Prompts that start with a tag are notes Claude Code or another session added, not what the user asked.
+        if not status.get("title") and prompt.strip() and not prompt.lstrip().startswith("<"):
             status["title"] = shorten(prompt, TITLE_LENGTH)
         status["activity"] = "Thinking"
     elif event in ("PreToolUse", "PermissionRequest") and payload.get("tool_name") in WAITING_TOOLS:

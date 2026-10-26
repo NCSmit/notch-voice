@@ -21,12 +21,16 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 - **Spoken replies.** Claude Code reads each reply aloud as soon as it finishes. Speech runs fully offline through macOS `say`, with markdown tidied up and code blocks skipped.
 - **A notch that glows.** A soft, shifting glow surrounds the notch while Claude talks.
 - **Short spoken replies.** While voice replies are on, Claude is reminded with every prompt to answer in a few sentences, so replies are quick to listen to.
+- **Never talks over you.** While you dictate with Wispr Flow, a reply that's speaking pauses and picks up where it left off when you stop. New replies wait until you're done.
+- **Replies take turns.** When several sessions finish at once, their replies are read one after another, oldest first, instead of cutting each other off.
 - **Music steps aside.** Spotify and Apple Music get quieter while Claude speaks, then return to the volume they were at.
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off, or set a keyboard shortcut for it. Turning them off mid-sentence stops the speech straight away.
 - **Permissions in the notch.** When Claude asks to run a command or edit a file, the notch shows the request with Allow and Deny.
+- **Sessions in the menu bar.** A menu bar icon lists your open Claude Code sessions and what each one is doing. Click one to go straight to it.
+- **An orchestrator.** Type `/orchestrator` in one session and it becomes the single voice over all the others: it briefs you, tells you when a session needs you, and passes your instructions on.
 - **Regular chats too.** Chats in the Claude desktop app can be read aloud as well, through a small local speak tool.
 - **Settings in one click.** The cog next to the switch opens settings for the voice, speaking speed, music volume and glow theme.
-- **Stays out of the way.** No Dock icon and no menu bar item. It uses almost no CPU while idle, and it opens at login.
+- **Stays out of the way.** No Dock icon, and you can hide the menu bar icon. It uses almost no CPU while idle, and it opens at login.
 
 <table>
   <tr>
@@ -68,6 +72,63 @@ To set it, open settings, click **Record** next to **Mute shortcut**, and press 
   <img src="docs/shortcut-settings.png" alt="The Mute shortcut row in NotchVoice settings, set to Option-Command-M" width="470">
 </p>
 
+## Sessions
+
+The menu bar icon lists every Claude Code session that's open on your Mac, in the terminal, the Claude desktop app or an IDE. Each one shows its name, the one Claude Code or the desktop app gives it (or else its first prompt), its project, and what it's doing right now.
+
+<p align="center">
+  <img src="docs/sessions.png" alt="The NotchVoice menu with the orchestrator at the top, then a session that needs you, one working and two finished, and a Let Every Session Speak item" width="404">
+</p>
+
+- **What needs you comes first.** A session waiting for a permission, a question or a plan approval moves to the top with an orange hand, and the menu bar icon shows how many are waiting. The rest stay in the order they started, so they don't jump around.
+- **Click to go there.** Clicking a session brings it forward. A session in the Claude desktop app opens right in the app. In Terminal and iTerm2, the session's own tab is selected; the first time, macOS asks whether NotchVoice may control that app.
+- **Always current.** A green dot means Claude is working, a waveform means its reply is being read aloud, and an empty circle means it's finished. A session leaves the list when you close it.
+
+A session that was already open when you installed NotchVoice may only appear after you restart it. To hide the icon, turn off **Show sessions in the menu bar** in settings.
+
+## Orchestrator
+
+Type `/orchestrator` in any Claude Code session to make it your orchestrator, the one voice over all your other sessions. It catches up on every open session and gives you a short spoken briefing. Then it keeps watching, and tells you as soon as a session finishes or needs you.
+
+- **One voice.** While a session is the orchestrator, NotchVoice reads only its replies aloud, and the other sessions keep working quietly. The orchestrator sits at the top of the menu with a crown. Click **Let Every Session Speak** to hear every session again, or just close the orchestrator.
+- **Passes your instructions on.** Say "tell the login session to run the tests", and it sends the message to that session. Where Claude Code can't message other sessions, it gives you the text to paste instead. It asks before passing on anything that changes a session's direction.
+- **Keeps context healthy.** When a long session's context is nearly full, it asks that session to save its working state first. After the next compaction, NotchVoice hands that state back to the session, so nothing gets lost.
+- **Knows your pull requests.** It tells you how each session's pull request is doing: checks passing or failing, changes requested, merged. For sessions in the Claude desktop app it asks the app, which already keeps track. For other sessions it asks GitHub with the `gh` command, once per session and only while it briefs you.
+- **Talk to it from anywhere.** Say "Hey Jarvis", or use the talk shortcut, and speak. See [Talk to the orchestrator](#talk-to-the-orchestrator).
+- **Learns how you work.** On request, it looks through your recent prompts for corrections you keep making, and suggests notes for Claude's memory. You can say no to any of them.
+
+The orchestrator reads your sessions' transcripts the way any Claude Code session can. Its helper redacts obvious secrets, such as API keys, before passing anything on.
+
+The first time, Claude Code asks before the orchestrator runs its helper and before it writes its notes in `~/.claude/orchestrator/`. Allow both for good, so a briefing isn't held up by a prompt you can't see. NotchVoice doesn't allow these for you, because then any session could write notes that the orchestrator trusts.
+
+## Talk to the orchestrator
+
+Speak to your orchestrator without going to its window. Your words go to the session where you ran `/orchestrator`, and it answers out loud.
+
+- **Say "Hey Jarvis".** Turn on **Listen for "Hey Jarvis"** in settings, then say the phrase and your message in one go, such as "Hey Jarvis, which session needs me?". A pause sends it. You can give it another name in settings, and set how long the pause is.
+- **Or use the talk shortcut.** Set it in settings, and choose whether you hold it while you speak and let go to send, or press it once to start and pause or press again to send.
+- **See and hear what's going on.** The notch shows your words as you speak, and a short sound marks the start and the send. Say "cancel" at the end, or click ✕, to stop without sending.
+- **Replies wait for you.** While you speak, a reply that's playing pauses, as it does when you dictate.
+- **It doesn't answer itself.** While NotchVoice reads a reply aloud, and for a moment after, "Hey Jarvis" is ignored, so a reply that mentions it can't start a message. Use the talk shortcut to cut in.
+- **On your Mac only.** Your words are recognised on this Mac, from its built-in microphone, so Bluetooth headphones stay in their high-quality mode. The first time, macOS asks to allow the microphone and speech recognition. If you'd rather have Wispr Flow write out your messages, see [below](#write-out-messages-with-wispr-flow).
+
+While **Listen for "Hey Jarvis"** is on and an orchestrator is open, the microphone stays on, and macOS shows its orange dot. With it off, the microphone is only used while you talk.
+
+Turning NotchVoice off stops all of this too: it stops listening, and the talk shortcut does nothing until you turn it back on.
+
+### Write out messages with Wispr Flow
+
+If you use [Wispr Flow](https://wisprflow.ai), it can write out your messages instead. Choose it under **Write out messages with** in settings. The choice only shows when Wispr Flow is installed, and Wispr Flow needs to be open.
+
+- **Wait for the sound.** NotchVoice still listens for "Hey Jarvis" and still decides when you've finished: a pause, letting go of the shortcut, or a second press. In between, Wispr Flow listens. It takes a moment to start, so the start sound plays once it's listening. Say "Hey Jarvis", wait for the sound, then speak.
+- **Never cut short.** If you started speaking before Wispr Flow was listening, if Wispr Flow is closed or already in use, or if its text doesn't arrive within 5 seconds, the message is sent as recognised on your Mac instead.
+- **NotchVoice holds the keyboard while you speak.** Wispr Flow pastes its text wherever the keyboard is, so NotchVoice gives it an invisible field of its own and hands the keyboard back as soon as the text arrives. Anything you type in the meantime goes nowhere. If you click into another app while you speak, NotchVoice takes the keyboard back for a moment when you finish, so the text can't land there.
+- **Only Wispr Flow's text is used.** NotchVoice takes the text only from Wispr Flow's own paste, so nothing you copied can end up in a message.
+
+Wispr Flow lists these messages in its history under the app you were in at the time.
+
+Anything that can run a command can also send the orchestrator a message, such as a Shortcut you start with "Hey Siri": `python3 ~/.claude/hooks/notchvoice_snapshot.py tell "Which session needs me?"`. Claude Code sessions can't. Since a message could come from anywhere on your Mac, the orchestrator answers questions straight away but reads anything else back to you, and waits for your yes, before it acts.
+
 ## Regular Claude chats
 
 Chats in the Claude desktop app can be read aloud too. The installer adds a small local tool called `speak` to the desktop app, and NotchVoice asks Claude to call it at the end of each reply with a short spoken summary. It uses the same voice, glow, music ducking and mute switch as Claude Code.
@@ -92,6 +153,8 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Music volume.** Choose how loud Spotify and Apple Music stay while Claude speaks, from silent to unchanged.
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
 - **Permissions.** Turn permission requests in the notch on or off.
+- **Sessions.** Show or hide your sessions in the menu bar.
+- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, set the talk shortcut and whether you hold or press it, choose how long a pause sends a message (1 to 5 seconds, 2.5 by default), and choose whether your Mac or Wispr Flow writes out your messages.
 - **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
 
 <p align="center">
@@ -115,13 +178,14 @@ NotchVoice works wherever Claude Code runs on your Mac: in the terminal, in the 
 > [!TIP]
 > The first time Claude speaks while Spotify or Music is open, macOS asks whether it may control that app. Allow it, so the music can get quieter.
 
-The installer does five things:
+The installer does six things:
 
-1. It copies three hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, and `notchvoice_brief.py` for short spoken replies. The speak tool for desktop chats, `notchvoice_mcp.py`, goes there too. An existing file with the same name is saved with a `.bak` extension first.
-2. It adds the hooks to `~/.claude/settings.json` as `Stop`, `PermissionRequest` and `UserPromptSubmit` hooks, and keeps a backup of that file. It also denies the desktop speak tool there, so Claude Code doesn't read its replies twice.
-3. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
-4. It starts the app, which then opens at login.
-5. If the Claude desktop app is installed, it adds the speak tool to the app's `claude_desktop_config.json` and keeps a backup of that file. The desktop app rewrites that file while it's open, so if it's open, the installer makes the change again as soon as you quit it.
+1. It copies five hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, `notchvoice_brief.py` for short spoken replies, `notchvoice_sessions.py` for the sessions in the menu bar, and `notchvoice_handoff.py`, which hands saved working state back after a compaction. The speak tool for desktop chats, `notchvoice_mcp.py`, and the orchestrator's helper, `notchvoice_snapshot.py`, go there too. An existing file with the same name is saved with a `.bak` extension first.
+2. It adds the hooks to `~/.claude/settings.json`, and keeps a backup of that file. It also denies the desktop speak tool there, so Claude Code doesn't read its replies twice.
+3. It installs the `/orchestrator` skill in `~/.claude/skills/orchestrator/`.
+4. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
+5. It starts the app, which then opens at login.
+6. If the Claude desktop app is installed, it adds the speak tool to the app's `claude_desktop_config.json` and keeps a backup of that file. The desktop app rewrites that file while it's open, so if it's open, the installer makes the change again as soon as you quit it.
 
 On a Mac without a notch, the panel sits at the top center of the screen instead.
 
@@ -136,15 +200,24 @@ flowchart LR
     F["NotchVoice in the notch"] -.->|reads and writes| E
     G["Claude asks for permission"] --> H["notchvoice_permission.py (PermissionRequest hook)"]
     H <-->|"request and answer, over a local socket"| F
+    I["Each session event"] --> J["notchvoice_sessions.py"]
+    J -.->|writes| E
 ```
 
-The Stop hook does the speaking. The app gives you the controls and the glow. They share three small files:
+The Stop hook does the speaking. The app gives you the controls, the glow and the session list. They share these files:
 
 | File | Written by | Used for |
 | --- | --- | --- |
 | `~/.claude/tts_off` | The switch | While this file exists, the hook stays silent. |
 | `~/.claude/tts_settings.json` | The settings window | Holds `voice`, `rate` (words per minute), `duck` (how loud the music stays, from 0 to 1) and `brief` (the short-replies reminder). The Stop hook passes the voice and rate to `say`. |
 | `$TMPDIR/claude_tts_owner` | The hook | Holds `<hook pid> <say pid>` while a reply is spoken. The glow follows this file. |
+| `$TMPDIR/claude_tts_session` | The hook | Holds `<hook pid> <session id>` while a reply is spoken, so the menu can mark that session. The app only trusts it while the hook pid matches the owner file. |
+| `$TMPDIR/claude_tts_queue/` | The hook | One ticket per reply that is waiting or speaking, locked by its hook while it runs, so replies take turns, oldest first. A voice sample from settings goes ahead of them and stops the one speaking. |
+| `$TMPDIR/notchvoice_dictating` | The app | Kept fresh while a dictation app uses the microphone. The Stop hook holds new replies back and pauses the one speaking while it's fresh, and treats it as gone once it's 5 seconds old, so speech never stays stuck if the app quits. |
+| `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
+| `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |
+| `~/.claude/notchvoice/inbox/<time>.json` | `notchvoice_snapshot.py tell` | A message for the orchestrator. Its watcher reads and removes each one, and drops any older than an hour, since acting on a stale instruction is worse than missing it. |
+| `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The handoff hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
 
 `$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.
 
@@ -152,9 +225,11 @@ In the desktop app's chats, Claude calls the `speak` tool from `notchvoice_mcp.p
 
 The `UserPromptSubmit` hook adds a one-line reminder to each prompt while voice replies are on and `brief` isn't turned off. The reminder asks Claude to keep its final answer to a few spoken sentences.
 
+The sessions hook runs, without making Claude wait, on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` and `SessionEnd`, and rewrites the session's status file each time. The handoff hook runs only on `SessionStart` after a compaction, and Claude waits for it, so the saved working state arrives before Claude carries on. The app lists a session for as long as its Claude Code process is running. No hook runs when you interrupt Claude with Esc, so the app also checks the end of a working session's transcript for Claude Code's interrupt note. Session names and desktop app ids come from Claude Code's own record of each running session in `~/.claude/sessions/`, which NotchVoice only reads.
+
 The permission hook sends each request to the app over a Unix socket at `$TMPDIR/notchvoice.sock`, then prints the app's answer as the hook's decision. Claude Code shows its own prompt at the same time. If you answer there first, the hook sees the result in the session transcript and withdraws the card. If the app isn't running, the hook exits straight away, and Claude Code asks as usual.
 
-Right-click the panel for **Settings…** and **Quit**.
+Right-click the panel, or click the menu bar icon, for **Settings…** and **Quit**.
 
 ## Configuration
 
@@ -172,7 +247,7 @@ The settings window covers everything you need day to day. If you use the hook w
 ./install.sh --uninstall
 ```
 
-This removes the app, its login item, the hooks, the speak tool, and their entries in `settings.json` and the desktop app's config.
+This removes the app, its login item, the hooks, the speak tool, the `/orchestrator` skill, the session status files and saved working state, and their entries in `settings.json` and the desktop app's config.
 
 ## Troubleshooting
 
@@ -208,6 +283,22 @@ Open System Settings → Privacy & Security → Automation. Allow Claude Code, o
 - Restart Claude Code after installing, so it loads the new hook.
 - Check that **Ask for permission in the notch** is on in settings.
 - Remember that the notch only shows requests Claude actually asks about. In auto mode, or for commands you've already allowed, Claude doesn't ask.
+
+</details>
+
+<details>
+<summary><b>Sessions are missing from the menu bar</b></summary>
+
+- Restart Claude Code after installing. Sessions only report to NotchVoice once they've loaded the new hook.
+- Check that **Show sessions in the menu bar** is on in settings.
+- If the icon is hidden behind the notch, quit a few other menu bar apps, or hold ⌘ and drag the icon to the right.
+
+</details>
+
+<details>
+<summary><b>Clicking a session doesn't select its tab</b></summary>
+
+Open System Settings → Privacy & Security → Automation, and allow NotchVoice to control Terminal or iTerm2. Without that, clicking a session still brings its app forward.
 
 </details>
 

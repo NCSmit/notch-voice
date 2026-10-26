@@ -21,6 +21,8 @@ final class SettingsWindowController {
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        // Otherwise the name field takes focus with its text selected, and a stray key would replace the name.
+        window.makeFirstResponder(nil)
     }
 
     private func makeWindow() -> NSWindow {
@@ -33,19 +35,24 @@ final class SettingsWindowController {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        let available = (NSScreen.main?.visibleFrame.height ?? SettingsView.size.height) - 24
-        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(SettingsView.size.height, available)))
+        let height = SettingsView.size.height + (preferences.hasWisprFlow ? SettingsView.wisprFlowHeight : 0)
+        let available = (NSScreen.main?.visibleFrame.height ?? height) - 24
+        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(height, available)))
         return window
     }
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1200)
+    static let size = CGSize(width: 470, height: 1340)
+    /// The room the Wispr Flow row and its longer footer take, when Wispr Flow is installed.
+    static let wisprFlowHeight: CGFloat = 52
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
     @ObservedObject var preferences: Preferences
     @State private var catalog = VoiceCatalog.load()
+    @State private var wakeNameDraft = ""
+    @FocusState private var isEditingName: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,20 +83,6 @@ struct SettingsView: View {
                     Text("Reminds Claude to answer in a few sentences while voice replies are on.")
                 }
                 Section {
-                    Toggle("Orchestrator mode", isOn: orchestratorMode)
-                    Toggle("Listen for \u{201C}Hey orchestrator\u{201D}", isOn: listensForWakeWord)
-                    Toggle("Listen through AirPods when I'm away", isOn: listensThroughHeadphones)
-                        .disabled(!preferences.listensForWakeWord)
-                        .help("After two minutes without keyboard or mouse use, the wake word is heard through your AirPods' mic, which puts them in call-quality audio.")
-                    Toggle("\u{2026}except while music is playing", isOn: skipsHeadphonesDuringMusic)
-                        .disabled(!preferences.listensForWakeWord || !preferences.listensThroughHeadphones)
-                        .padding(.leading, 16)
-                } header: {
-                    Text("Sessions")
-                } footer: {
-                    Text("Orchestrator mode: only the session where you ran /orchestrator speaks, and it briefs you on the others. Hey orchestrator: say it, dictate with Wispr Flow, and finish with \u{201C}send it\u{201D}. Your message is typed into the orchestrator session. The wake word is recognised on this Mac.")
-                }
-                Section {
                     LabeledContent("Music volume") {
                         HStack(spacing: 8) {
                             Image(systemName: "speaker.fill").foregroundStyle(.secondary)
@@ -116,24 +109,65 @@ struct SettingsView: View {
                 } footer: {
                     Text("Claude's own prompt still works too, and the first answer counts.")
                 }
+                Section {
+                    Toggle("Show sessions in the menu bar", isOn: showsSessionsInMenuBar)
+                } header: {
+                    Text("Sessions")
+                } footer: {
+                    Text("Lists your open Claude Code sessions. Click one to go to its window.")
+                }
+                Section {
+                    Toggle("Listen for \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}", isOn: listensForWakePhrase)
+                    LabeledContent("Name") {
+                        TextField("Name", text: $wakeNameDraft, prompt: Text(Preferences.defaultWakeName))
+                            .labelsHidden()
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 150)
+                            .focused($isEditingName)
+                            .onSubmit(saveWakeName)
+                            .onChange(of: isEditingName) { _, editing in
+                                if !editing { saveWakeName() }
+                            }
+                            .onDisappear(perform: saveWakeName)
+                    }
+                    ShortcutRecorder(
+                        title: "Talk shortcut",
+                        shortcut: preferences.talkShortcut,
+                        setShortcut: preferences.setTalkShortcut,
+                        pauseShortcut: preferences.pauseShortcuts
+                    )
+                    Picker("Talk shortcut works by", selection: talkMode) {
+                        Text("Holding it down").tag(TalkMode.hold)
+                        Text("Pressing it to start").tag(TalkMode.press)
+                    }
+                    LabeledContent("Pause before sending") {
+                        HStack(spacing: 10) {
+                            Slider(value: pauseBeforeSending, in: TalkPolicy.pauses, step: 0.5)
+                            Text(String(format: "%.1f s", preferences.pauseBeforeSending))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    }
+                    .help("How long a pause sends a message after \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D} or a press of the talk shortcut. Holding the shortcut down sends when you let go.")
+                    if preferences.hasWisprFlow {
+                        Picker("Write out messages with", selection: transcriber) {
+                            Text("Apple (on this Mac)").tag(Transcriber.apple)
+                            Text("Wispr Flow").tag(Transcriber.wisprFlow)
+                        }
+                    }
+                } header: {
+                    Text("Talk to the orchestrator")
+                } footer: {
+                    Text(talkFooter)
+                }
+                .onAppear { wakeNameDraft = preferences.wakeName }
                 Section("General") {
                     ShortcutRecorder(
                         title: "Mute shortcut",
                         shortcut: preferences.muteShortcut,
                         setShortcut: preferences.setMuteShortcut,
-                        pauseShortcut: preferences.pauseMuteShortcut
-                    )
-                    ShortcutRecorder(
-                        title: "Skip reply",
-                        shortcut: preferences.skipShortcut,
-                        setShortcut: preferences.setSkipShortcut,
-                        pauseShortcut: preferences.pauseSkipShortcuts
-                    )
-                    ShortcutRecorder(
-                        title: "Skip all queued replies",
-                        shortcut: preferences.skipAllShortcut,
-                        setShortcut: preferences.setSkipAllShortcut,
-                        pauseShortcut: preferences.pauseSkipShortcuts
+                        pauseShortcut: preferences.pauseShortcuts
                     )
                     Toggle("Open at Login", isOn: opensAtLogin)
                 }
@@ -257,28 +291,46 @@ struct SettingsView: View {
         Binding(get: { voice.keepsRepliesShort }, set: { voice.setKeepsRepliesShort($0) })
     }
 
-    private var listensThroughHeadphones: Binding<Bool> {
-        Binding(get: { preferences.listensThroughHeadphones }, set: { preferences.setListensThroughHeadphones($0) })
-    }
-
-    private var skipsHeadphonesDuringMusic: Binding<Bool> {
-        Binding(get: { preferences.skipsHeadphonesDuringMusic }, set: { preferences.setSkipsHeadphonesDuringMusic($0) })
-    }
-
-    private var listensForWakeWord: Binding<Bool> {
-        Binding(get: { preferences.listensForWakeWord }, set: { preferences.setListensForWakeWord($0) })
-    }
-
-    private var orchestratorMode: Binding<Bool> {
-        Binding(get: { voice.isOrchestratorMode }, set: { voice.setOrchestratorMode($0) })
-    }
-
     private var musicVolume: Binding<Double> {
         Binding(get: { voice.musicVolume }, set: { voice.setMusicVolume(($0 * 20).rounded() / 20) })
     }
 
     private var asksForPermission: Binding<Bool> {
         Binding(get: { preferences.asksForPermission }, set: { preferences.setAsksForPermission($0) })
+    }
+
+    private var showsSessionsInMenuBar: Binding<Bool> {
+        Binding(get: { preferences.showsSessionsInMenuBar }, set: { preferences.setShowsSessionsInMenuBar($0) })
+    }
+
+    private var listensForWakePhrase: Binding<Bool> {
+        Binding(get: { preferences.listensForWakePhrase }, set: { preferences.setListensForWakePhrase($0) })
+    }
+
+    private var talkMode: Binding<TalkMode> {
+        Binding(get: { preferences.talkMode }, set: { preferences.setTalkMode($0) })
+    }
+
+    private var pauseBeforeSending: Binding<Double> {
+        Binding(get: { preferences.pauseBeforeSending }, set: { preferences.setPauseBeforeSending($0) })
+    }
+
+    private var transcriber: Binding<Transcriber> {
+        Binding(get: { preferences.transcriber }, set: { preferences.setTranscriber($0) })
+    }
+
+    private var talkFooter: String {
+        let phrase = "\u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}"
+        let microphone = "While listening is on and an orchestrator is open, the microphone stays on."
+        guard preferences.hasWisprFlow, preferences.transcriber == .wisprFlow else {
+            return "Say \(phrase) or use the shortcut, then speak to the session where you ran /orchestrator. Your words are recognised on this Mac. \(microphone)"
+        }
+        return "Say \(phrase) or use the shortcut, wait for the sound, then speak to the session where you ran /orchestrator. Wispr Flow writes out your message, and NotchVoice keeps the keyboard until it\u{2019}s done. \(microphone)"
+    }
+
+    private func saveWakeName() {
+        preferences.setWakeName(wakeNameDraft)
+        wakeNameDraft = preferences.wakeName
     }
 
     private var opensAtLogin: Binding<Bool> {

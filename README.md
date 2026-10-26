@@ -22,6 +22,7 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 - **A notch that glows.** A soft, shifting glow surrounds the notch while Claude talks.
 - **Short spoken replies.** While voice replies are on, Claude is reminded with every prompt to answer in a few sentences, so replies are quick to listen to.
 - **Never talks over you.** While you dictate with Wispr Flow, a reply that's speaking pauses and picks up where it left off when you stop. New replies wait until you're done.
+- **Replies take turns.** When several sessions finish at once, their replies are read one after another, oldest first, instead of cutting each other off.
 - **Music steps aside.** Spotify and Apple Music get quieter while Claude speaks, then return to the volume they were at.
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off, or set a keyboard shortcut for it. Turning them off mid-sentence stops the speech straight away.
 - **Permissions in the notch.** When Claude asks to run a command or edit a file, the notch shows the request with Allow and Deny.
@@ -199,6 +200,7 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `~/.claude/tts_settings.json` | The settings window | Holds `voice`, `rate` (words per minute), `duck` (how loud the music stays, from 0 to 1) and `brief` (the short-replies reminder). The Stop hook passes the voice and rate to `say`. |
 | `$TMPDIR/claude_tts_owner` | The hook | Holds `<hook pid> <say pid>` while a reply is spoken. The glow follows this file. |
 | `$TMPDIR/claude_tts_session` | The hook | Holds `<hook pid> <session id>` while a reply is spoken, so the menu can mark that session. The app only trusts it while the hook pid matches the owner file. |
+| `$TMPDIR/claude_tts_queue/` | The hook | One ticket per reply that is waiting or speaking, locked by its hook while it runs, so replies take turns, oldest first. A voice sample from settings goes ahead of them and stops the one speaking. |
 | `$TMPDIR/notchvoice_dictating` | The app | Kept fresh while a dictation app uses the microphone. The Stop hook holds new replies back and pauses the one speaking while it's fresh, and treats it as gone once it's 5 seconds old, so speech never stays stuck if the app quits. |
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
 | `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |

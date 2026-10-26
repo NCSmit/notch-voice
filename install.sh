@@ -90,7 +90,7 @@ if os.path.exists(path):
         sys.exit(f"Could not read {path} ({error}). Add the hooks from the README by hand.")
 sessions_hook = {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_sessions.py", "async": True, "timeout": 10}
 wanted = [
-    ("Stop", {"type": "command", "command": "python3 ~/.claude/hooks/speak.py", "async": True, "timeout": 300}),
+    ("Stop", {"type": "command", "command": "python3 ~/.claude/hooks/speak.py", "async": True, "timeout": 600}),
     ("PermissionRequest", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_permission.py", "timeout": 600}),
     ("UserPromptSubmit", {"type": "command", "command": "python3 ~/.claude/hooks/notchvoice_brief.py", "timeout": 10}),
 ] + [(event, sessions_hook) for event in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Stop", "SessionEnd")]

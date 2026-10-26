@@ -32,7 +32,15 @@ final class TalkController: ObservableObject {
     private let dictation: DictationMonitor
     private var phase = Phase.off
     private var hasOrchestrator = false
+    private var isShortcutHeld = false
+    // A capture is on its way (waiting for permission or the microphone), so presses don't start a second one.
+    private var isStarting = false
     private var heard = ""
+    // Words from earlier requests in the same message, when the recognizer ended one while the user kept talking.
+    private var carried = ""
+    private var requestStarted = Date()
+    private var retryDelay: TimeInterval = 0
+    private var retry: Timer?
     private var captureStarted = Date()
     private var lastWords = Date()
     private var ticker: Timer?
@@ -56,6 +64,8 @@ final class TalkController: ObservableObject {
     // MARK: Starting
 
     func shortcutPressed() {
+        isShortcutHeld = true
+        guard !isStarting else { return }
         switch (preferences.talkMode, phase) {
         case (.press, .capturing(.press)):
             finish()
@@ -67,6 +77,7 @@ final class TalkController: ObservableObject {
     }
 
     func shortcutReleased() {
+        isShortcutHeld = false
         if phase == .capturing(.hold) { finish() }
     }
 
@@ -96,7 +107,8 @@ final class TalkController: ObservableObject {
     }
 
     private func beginWaiting() async {
-        guard await ensureListening() else { return }
+        // Nobody asked just now, so a missing permission is only logged rather than shown each time this runs.
+        guard await ensureListening(quietly: true) else { return }
         guard phase == .off else { return }
         phase = .waitingForPhrase
         freshRequest()
@@ -109,30 +121,36 @@ final class TalkController: ObservableObject {
             NSSound(named: "Basso")?.play()
             return
         }
+        isStarting = true
         Task {
-            guard await ensureListening() else { return }
+            defer { isStarting = false }
+            guard await ensureListening(quietly: false) else { return }
             if trigger != .phrase { freshRequest() }
             beginCapture(trigger)
+            // The keys may have been let go while the microphone was starting.
+            if trigger == .hold, !isShortcutHeld { finish() }
         }
     }
 
     /// Starts the microphone if it isn't running, asking for permission the first time.
-    private func ensureListening() async -> Bool {
+    private func ensureListening(quietly: Bool) async -> Bool {
         if speech.isRunning { return true }
+        var problem: String
         if !SpeechInput.isAuthorized, !(await SpeechInput.authorize()) {
-            show(.done(message: "Allow NotchVoice the microphone and speech recognition in System Settings › Privacy & Security.",
-                       isError: true), for: 5)
-            return false
+            problem = "Allow NotchVoice the microphone and speech recognition in System Settings › Privacy & Security."
+        } else {
+            do {
+                try speech.start()
+                return true
+            } catch SpeechInput.Problem.unavailable {
+                problem = "On-device speech recognition isn't available. Turn on Dictation in Keyboard settings."
+            } catch {
+                problem = "Couldn't use the microphone."
+                log.error("could not start listening: \(String(describing: error))")
+            }
         }
-        do {
-            try speech.start()
-            return true
-        } catch SpeechInput.Problem.unavailable {
-            show(.done(message: "On-device speech recognition isn't available. Turn on Dictation in Keyboard settings.", isError: true), for: 5)
-        } catch {
-            show(.done(message: "Couldn't use the microphone.", isError: true), for: 4)
-            log.error("could not start listening: \(String(describing: error))")
-        }
+        log.info("not listening: \(problem, privacy: .public)")
+        if !quietly { show(.done(message: problem, isError: true), for: 5) }
         return false
     }
 
@@ -141,6 +159,7 @@ final class TalkController: ObservableObject {
     private func beginCapture(_ trigger: TalkPolicy.Trigger, words: String = "") {
         phase = .capturing(trigger)
         heard = words
+        carried = ""
         captureStarted = Date()
         lastWords = Date()
         // Replies wait while the user speaks, the same way they do for dictation apps.
@@ -161,14 +180,17 @@ final class TalkController: ObservableObject {
         case .waitingForPhrase:
             if let words = TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) { beginCapture(.phrase, words: words) }
         case .capturing(let trigger):
-            let words = trigger == .phrase ? TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) ?? heard : text
+            let latest = trigger == .phrase && carried.isEmpty ? TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) : text
+            guard let latest else { break }
+            let words = Self.joined(carried, latest)
             if words != heard {
                 heard = words
                 lastWords = Date()
                 showListening()
             }
         case .finishing:
-            let words = TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) ?? text
+            let latest = carried.isEmpty ? TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) ?? text : text
+            let words = Self.joined(carried, latest)
             if isFinal, let finalText {
                 self.finalText = nil
                 finalText(words)
@@ -246,6 +268,7 @@ final class TalkController: ObservableObject {
         ticker = nil
         finalText = nil
         heard = ""
+        carried = ""
         dictation.hold(false)
         if preferences.listensForWakePhrase && hasOrchestrator {
             phase = .waitingForPhrase
@@ -259,6 +282,9 @@ final class TalkController: ObservableObject {
     }
 
     private func freshRequest() {
+        retry?.invalidate()
+        retry = nil
+        requestStarted = Date()
         speech.newRequest()
         freshening?.invalidate()
         freshening = nil
@@ -276,9 +302,28 @@ final class TalkController: ObservableObject {
     private func requestEnded() {
         switch phase {
         case .waitingForPhrase:
-            freshRequest()
+            // A request that ends straight away is failing, not finishing, so wait longer before each new one.
+            if Date().timeIntervalSince(requestStarted) < 2 {
+                retryDelay = min(max(retryDelay * 2, 1), 30)
+                log.info("speech recognition stopped at once; trying again in \(self.retryDelay) s")
+                retry?.invalidate()
+                let timer = Timer(timeInterval: retryDelay, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, self.phase == .waitingForPhrase else { return }
+                        self.freshRequest()
+                    }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                retry = timer
+            } else {
+                retryDelay = 0
+                freshRequest()
+            }
         case .capturing:
-            finish()
+            // The recognizer ended this request while the user is still talking, so carry on in a new one.
+            carried = heard
+            requestStarted = Date()
+            speech.newRequest()
         case .finishing:
             if let finalText {
                 self.finalText = nil
@@ -297,10 +342,11 @@ final class TalkController: ObservableObject {
         await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(filePath: "/usr/bin/env")
-            process.arguments = ["python3", "-I", helper.path, "tell", "--source", "voice"]
-            let input = Pipe()
+            // The message goes in as an argument, not through a pipe, which would end the app if the helper quit
+            // before reading it.
+            process.arguments = ["python3", "-I", helper.path, "tell", "--source", "voice", "--", message]
             let errors = Pipe()
-            process.standardInput = input
+            process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice
             process.standardError = errors
             process.terminationHandler = { process in
@@ -310,12 +356,14 @@ final class TalkController: ObservableObject {
             }
             do {
                 try process.run()
-                input.fileHandleForWriting.write(Data(message.utf8))
-                try input.fileHandleForWriting.close()
             } catch {
                 continuation.resume(returning: "Couldn't reach the orchestrator")
             }
         }
+    }
+
+    private static func joined(_ earlier: String, _ latest: String) -> String {
+        [earlier, latest].map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     // MARK: The notch card

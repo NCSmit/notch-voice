@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -771,6 +772,77 @@ class PullRequestTests(unittest.TestCase):
                 mock.patch.object(snapshot, "pull_request", return_value=None), redirect_stdout(io.StringIO()) as out:
             snapshot.prs(argparse.Namespace(skip="me", all=False))
         self.assertIsNone({r["session_id"]: r for r in json.loads(out.getvalue())}["nowhere"]["pr_from"])
+
+
+class DictationTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.flag = os.path.join(self.dir.name, "notchvoice_dictating")
+        for name, value in (("DICTATION_FILE", self.flag), ("OWNER_FILE", os.path.join(self.dir.name, "owner"))):
+            patcher = mock.patch.object(speak, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def dictate(self, on=True, age=0):
+        if on:
+            Path(self.flag).touch()
+            os.utime(self.flag, (time.time() - age, time.time() - age))
+        elif os.path.exists(self.flag):
+            os.remove(self.flag)
+
+    def test_a_flag_counts_only_while_the_app_keeps_it_fresh(self):
+        self.assertFalse(speak.user_is_dictating())
+        self.dictate()
+        self.assertTrue(speak.user_is_dictating())
+        self.dictate(age=speak.DICTATION_FRESH + 1)
+        self.assertFalse(speak.user_is_dictating())
+
+    def test_a_reply_waits_for_dictation_to_end_but_not_forever(self):
+        speak.write_owner(os.getpid())
+        self.assertTrue(speak.wait_while_dictating(time.time()))
+        self.dictate()
+        self.assertFalse(speak.wait_while_dictating(time.time() - speak.DEADLINE - 1))
+        speak.write_owner(1)
+        self.assertFalse(speak.wait_while_dictating(time.time()))
+        with mock.patch.object(speak.time, "sleep", side_effect=lambda _: self.dictate(False)):
+            speak.write_owner(os.getpid())
+            self.assertTrue(speak.wait_while_dictating(time.time()))
+
+    class FakeSay:
+        pid = 4242
+
+        def __init__(self, rounds, on_round):
+            self.rounds, self.on_round, self.calls = rounds, on_round, 0
+
+        def communicate(self, text=None, timeout=None):
+            self.on_round(self.calls)
+            self.calls += 1
+            if self.calls < self.rounds:
+                raise subprocess.TimeoutExpired("say", timeout)
+
+        def wait(self):
+            return 0
+
+    def test_speech_pauses_while_the_user_dictates_and_resumes_after(self):
+        say = self.FakeSay(6, lambda n: self.dictate(2 <= n <= 3))
+        with mock.patch.object(speak.os, "kill") as kill:
+            speak.play(say, "Hello", time.time())
+        self.assertEqual([c.args for c in kill.call_args_list], [(4242, signal.SIGSTOP), (4242, signal.SIGCONT)])
+
+    def test_a_reply_paused_too_long_is_dropped_instead_of_left_stopped(self):
+        say = self.FakeSay(99, lambda n: self.dictate())
+        with mock.patch.object(speak.os, "kill") as kill:
+            speak.play(say, "Hello", time.time() - speak.DEADLINE - 1)
+        self.assertEqual([c.args for c in kill.call_args_list],
+                         [(4242, signal.SIGSTOP), (4242, signal.SIGTERM), (4242, signal.SIGCONT)])
+
+    def test_taking_over_wakes_a_paused_reply_so_it_can_stop(self):
+        speak.write_owner(111, 222)
+        with mock.patch.object(speak.os, "kill") as kill:
+            speak.take_over()
+        self.assertEqual([c.args for c in kill.call_args_list],
+                         [(111, signal.SIGTERM), (111, signal.SIGCONT), (222, signal.SIGTERM), (222, signal.SIGCONT)])
 
 if __name__ == "__main__":
     unittest.main()

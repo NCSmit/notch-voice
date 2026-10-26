@@ -202,3 +202,13 @@ struct SessionMenuTests {
         #expect(SessionOpener.tabScript(for: nil) == nil)
     }
 }
+
+struct DictationTests {
+    @Test func onlyDictationAppsCount() {
+        #expect(DictationMonitor.isDictationApp("com.electron.wispr-flow"))
+        #expect(DictationMonitor.isDictationApp("com.electron.wispr-flow.helper"))
+        #expect(DictationMonitor.isDictationApp("com.apple.SpeechRecognitionCore.speechrecognitiond"))
+        #expect(!DictationMonitor.isDictationApp("com.electron.wispr-flowish"))
+        #expect(!DictationMonitor.isDictationApp("us.zoom.xos"))
+    }
+}

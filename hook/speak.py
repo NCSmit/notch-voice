@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 try:
     from notchvoice_sessions import orchestrator
@@ -43,6 +44,13 @@ DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
 # "<hook pid> <session_id>" of the reply currently speaking, so the menu bar can mark that session. The app only trusts
 # it while the hook pid matches the owner file.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
+# NotchVoice keeps this file fresh while you dictate with a dictation app. One that stops being refreshed, because the
+# app quit, counts as gone after DICTATION_FRESH seconds, so a reply can't stay held or paused.
+DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
+DICTATION_FRESH = 5
+# The Stop hook is given 300 s. A reply still held back or paused by then is dropped, so `say` is never left stopped
+# when the hook is ended.
+DEADLINE = 280
 
 
 def is_tool_result_only(content):
@@ -126,16 +134,57 @@ def is_owner():
     return bool(owner) and owner[0] == os.getpid()
 
 
-def take_over():
-    """Stop the previous reply at any stage (still preparing or already speaking) and claim the voice."""
-    for pid in read_owner():
-        if pid == os.getpid():
-            continue
+def stop(pid):
+    # A paused `say` only acts on SIGTERM once it is continued.
+    for sig in (signal.SIGTERM, signal.SIGCONT):
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, sig)
         except OSError:
             pass
+
+
+def take_over():
+    """Stop the previous reply at any stage (still preparing, paused or speaking) and claim the voice."""
+    for pid in read_owner():
+        if pid != os.getpid():
+            stop(pid)
     write_owner(os.getpid())
+
+
+def user_is_dictating():
+    try:
+        return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_FRESH
+    except OSError:
+        return False
+
+
+def wait_while_dictating(started):
+    """Never start talking over the user. False when a newer reply took over or the wait ran out."""
+    while user_is_dictating():
+        if not is_owner() or time.time() - started > DEADLINE:
+            return False
+        time.sleep(0.2)
+    return is_owner()
+
+
+def play(proc, text, started):
+    """Feeds the reply to `say`, pausing it while the user dictates and resuming where it was."""
+    paused = False
+    pending = text
+    while True:
+        try:
+            proc.communicate(pending, timeout=0.2)
+            return
+        except subprocess.TimeoutExpired:
+            pending = None
+        if paused and time.time() - started > DEADLINE:
+            stop(proc.pid)
+            proc.wait()
+            return
+        dictating = user_is_dictating()
+        if dictating != paused:
+            os.kill(proc.pid, signal.SIGSTOP if dictating else signal.SIGCONT)
+            paused = dictating
 
 
 def write_session(session_id):
@@ -218,14 +267,20 @@ def main():
     if rate:
         cmd += ["-r", str(rate)]
 
+    started = time.time()
     take_over()
     write_session(payload.get("session_id"))
+    if not wait_while_dictating(started):
+        if is_owner():
+            os.remove(OWNER_FILE)
+            clear_session()
+        return
     duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
     write_owner(os.getpid(), proc.pid)
-    proc.communicate(text)
+    play(proc, text, started)
     # A newer reply kills this process outright, so reaching here means we finished last.
     if is_owner():
         restore_music()

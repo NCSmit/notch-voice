@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var permissions: PermissionCenter?
     private var sessions: SessionStore?
     private var statusItem: StatusItemController?
+    private var dictation: DictationMonitor?
+    private var dictationChanges: AnyCancellable?
     private var permissionSetting: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,6 +40,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.notch?.flash()
         }
         let preferences = Preferences(muteHotkey: muteHotkey)
+        let dictation = DictationMonitor()
+        dictationChanges = dictation.$isDictating.sink { dictating in
+            MainActor.assumeIsolated { voice.setDictating(dictating) }
+        }
+        dictation.start()
+        self.dictation = dictation
         let permissions = PermissionCenter()
         permissions.isEnabled = { preferences.asksForPermission }
         permissionSetting = preferences.$asksForPermission.dropFirst().filter { !$0 }.sink { _ in
@@ -54,6 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = StatusItemController(sessions: sessions, voice: voice, preferences: preferences) { settings.show() }
         NSApp.mainMenu = makeMainMenu()
         LoginItem.enableOnFirstLaunch()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        dictation?.stop()
     }
 
     @objc private func showSettings() {

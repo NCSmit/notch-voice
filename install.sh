@@ -27,7 +27,7 @@ if os.path.exists(path):
     for event, script in entries:
         groups = []
         for group in hooks.get(event, []):
-            group["hooks"] = [h for h in group.get("hooks", []) if script not in h.get("command", "")]
+            group["hooks"] = [h for h in group.get("hooks", []) if h.get("command", "").rsplit("/", 1)[-1] != script]
             if group["hooks"]:
                 groups.append(group)
         if groups:
@@ -47,8 +47,8 @@ if os.path.exists(path):
         json.dump(settings, f, indent=2)
         f.write("\n")
 EOF
-  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
-  rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/skills/orchestrator"
+  rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOOKS/notchvoice_snapshot.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
+  rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/notchvoice/handoffs" "$HOME/.claude/skills/orchestrator"
   rm -f "$HOME/.claude/notchvoice/orchestrator.json"
   rmdir "$HOME/.claude/notchvoice" 2>/dev/null || true
   python3 hook/notchvoice_desktop.py
@@ -62,7 +62,7 @@ if ! command -v swift >/dev/null 2>&1; then
 fi
 
 mkdir -p "$HOOKS"
-for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py notchvoice_sessions.py; do
+for script in speak.py notchvoice_permission.py notchvoice_brief.py notchvoice_mcp.py notchvoice_sessions.py notchvoice_snapshot.py; do
   if [[ -f "$HOOKS/$script" ]] && ! cmp -s "hook/$script" "$HOOKS/$script"; then
     cp "$HOOKS/$script" "$HOOKS/$script.bak"
     echo "Saved your previous $script as $HOOKS/$script.bak"
@@ -96,7 +96,7 @@ added = []
 for event, hook in wanted:
     script = hook["command"].rsplit("/", 1)[-1]
     groups = hooks.setdefault(event, [])
-    existing = [h for group in groups for h in group.get("hooks", []) if script in h.get("command", "")]
+    existing = [h for group in groups for h in group.get("hooks", []) if h.get("command", "").rsplit("/", 1)[-1] == script]
     for h in existing:
         if h != hook:  # an older install registered it differently
             h.clear()
@@ -124,7 +124,7 @@ if blocked:
 EOF
 
 mkdir -p "$HOME/.claude/skills/orchestrator"
-cp orchestrator/SKILL.md orchestrator/snapshot.py "$HOME/.claude/skills/orchestrator/"
+cp orchestrator/SKILL.md "$HOME/.claude/skills/orchestrator/"
 echo "Installed the /orchestrator command for Claude Code."
 
 ./build.sh --install

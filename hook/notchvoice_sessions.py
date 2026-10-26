@@ -23,9 +23,12 @@ import subprocess
 import sys
 import time
 
-SESSIONS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "sessions")
+NOTCHVOICE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice")
+SESSIONS_DIR = os.path.join(NOTCHVOICE_DIR, "sessions")
 # The orchestrator asks a session to save its working state here before it compacts; it is handed back afterwards.
-HANDOFF_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "handoffs")
+HANDOFF_DIR = os.path.join(NOTCHVOICE_DIR, "handoffs")
+# {"session_id": ...} of the session that ran /orchestrator. While that session is open, only its replies are spoken.
+ORCHESTRATOR_FILE = os.path.join(NOTCHVOICE_DIR, "orchestrator.json")
 TITLE_LENGTH = 60
 ACTIVITY_LENGTH = 90
 STATES = {
@@ -40,6 +43,9 @@ STATES = {
 # Tools that stop and wait for an answer, with what to show while they wait.
 WAITING_TOOLS = {"AskUserQuestion": "Needs you: a question", "ExitPlanMode": "Needs you: a plan to approve"}
 SHELLS = {"sh", "bash", "zsh", "dash", "fish"}
+# Without a process to check, a session counts as open for this long after its last event, as in the app.
+IDLE_LIFETIME = 15 * 60
+WORKING_LIFETIME = 2 * 60 * 60
 
 
 def shorten(text, limit):
@@ -109,6 +115,35 @@ def claude_process():
             return found
         pid = parent
     return {}
+
+
+def is_open(status, now=None):
+    """Whether a status file belongs to a session that is still open, decided the same way as the app's menu."""
+    if not isinstance(status, dict) or status.get("state") not in ("working", "waiting", "idle"):
+        return False
+    pid, process = status.get("pid"), status.get("process")
+    if isinstance(pid, int) and isinstance(process, str):
+        try:
+            os.kill(pid, 0)
+        except PermissionError:
+            pass
+        except OSError:
+            return False
+        info = process_info(pid)
+        return info is not None and info[2] == process
+    try:
+        age = (now or time.time()) - float(status.get("updated") or 0)
+    except (TypeError, ValueError):
+        return False
+    return age < (IDLE_LIFETIME if status.get("state") == "idle" else WORKING_LIFETIME)
+
+
+def orchestrator():
+    """The session id of the orchestrator while it is open, or None when every session speaks."""
+    session = read(ORCHESTRATOR_FILE).get("session_id")
+    if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+        return None
+    return session if is_open(read(os.path.join(SESSIONS_DIR, f"{session}.json"))) else None
 
 
 def read(path):
@@ -195,9 +230,12 @@ def main():
 
 
 def restore_handoff(session):
+    path = os.path.join(HANDOFF_DIR, f"{session}.md")
     try:
-        with open(os.path.join(HANDOFF_DIR, f"{session}.md")) as f:
+        with open(path) as f:
             notes = f.read(20000)
+        # Handed back once, so a later compaction doesn't bring back state the session has since moved past.
+        os.replace(path, os.path.join(HANDOFF_DIR, f"{session}.restored.md"))
     except OSError:
         return
     if notes.strip():

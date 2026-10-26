@@ -65,7 +65,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func rebuildMenu() {
         let rows = menu.items.filter { $0.representedObject is String }
-        if isMenuOpen, rows.map({ $0.representedObject as? String }) == sessions.map(\.id) {
+        let hasReleaseItem = menu.items.contains { $0.action == #selector(releaseOrchestrator) }
+        if isMenuOpen, rows.map({ $0.representedObject as? String }) == sessions.map(\.id),
+           hasReleaseItem == sessions.contains(where: \.isOrchestrator) {
             // Replacing items under the pointer resets the highlight and can swallow a click, so an open menu whose
             // sessions are unchanged is updated in place.
             for (item, session) in zip(rows, sessions) {
@@ -94,11 +96,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             item.target = target
             items.append(item)
         }
+        items.append(.separator())
+        if sessions.contains(where: \.isOrchestrator) {
+            let release = NSMenuItem(title: "Let Every Session Speak", action: #selector(releaseOrchestrator), keyEquivalent: "")
+            release.target = target
+            release.toolTip = "Read every session's replies aloud again. The orchestrator keeps running."
+            items.append(release)
+        }
         let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = target
         let quit = NSMenuItem(title: "Quit NotchVoice", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
-        return items + [.separator(), settings, quit]
+        return items + [settings, quit]
     }
 
     static func item(for session: ClaudeSession, isSpeaking: Bool, canOpen: Bool) -> NSMenuItem {
@@ -108,21 +117,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private static func configure(_ item: NSMenuItem, for session: ClaudeSession, isSpeaking: Bool, canOpen: Bool) {
-        item.title = session.title
+        let title = session.isOrchestrator ? "Orchestrator" : session.title
+        item.title = title
         item.representedObject = session.id
-        item.image = image(for: session.state, isSpeaking: isSpeaking)
+        item.image = image(for: session, isSpeaking: isSpeaking)
         item.isEnabled = canOpen
         item.toolTip = session.cwd.map { ($0 as NSString).abbreviatingWithTildeInPath }
         let detail = detail(for: session, isSpeaking: isSpeaking)
         if #available(macOS 14.4, *) {
             item.subtitle = detail
         } else {
-            let title = NSMutableAttributedString(string: session.title + "\n")
-            title.append(NSAttributedString(string: detail, attributes: [
+            let attributed = NSMutableAttributedString(string: title + "\n")
+            attributed.append(NSAttributedString(string: detail, attributes: [
                 .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.secondaryLabelColor,
             ]))
-            item.attributedTitle = title
+            item.attributedTitle = attributed
         }
     }
 
@@ -137,7 +147,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return session.project.isEmpty || session.project == session.title ? status : "\(session.project) · \(status)"
     }
 
-    private static func image(for state: ClaudeSession.State, isSpeaking: Bool) -> NSImage? {
+    private static func image(for session: ClaudeSession, isSpeaking: Bool) -> NSImage? {
+        let state = session.state
+        if session.isOrchestrator {
+            let image = Self.symbol("crown.fill", pointSize: 12, weight: .semibold, canvas: NSSize(width: 16, height: 16))
+            image?.accessibilityDescription = "Orchestrator"
+            return image
+        }
         let (symbol, color): (String, NSColor?) = if isSpeaking {
             ("waveform", nil)
         } else {
@@ -177,6 +193,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func openSession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let session = sessions.first(where: { $0.id == id }) else { return }
         SessionOpener.open(session)
+    }
+
+    @objc private func releaseOrchestrator() {
+        store.releaseOrchestrator()
     }
 
     @objc private func showSettings() {

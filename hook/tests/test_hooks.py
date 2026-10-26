@@ -1,3 +1,4 @@
+import argparse
 import importlib.util
 import io
 import json
@@ -9,7 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -23,12 +24,16 @@ def load(name):
     return module
 
 
+# speak.py, the brief hook and the snapshot helper import the sessions hook, so they all share this one module and
+# its patched folders.
+sessions = load("notchvoice_sessions")
+sys.modules["notchvoice_sessions"] = sessions
 speak = load("speak")
 brief = load("notchvoice_brief")
 permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
-sessions = load("notchvoice_sessions")
+snapshot = load("notchvoice_snapshot")
 
 
 def run_main(module, payload):
@@ -466,70 +471,181 @@ class ClaudeProcessTests(unittest.TestCase):
             self.assertEqual(sessions.claude_process(), {})
 
 
-class OrchestratorModeTests(unittest.TestCase):
+class OrchestratorTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         root = self.dir.name
-        self.settings = os.path.join(root, "tts_settings.json")
-        self.orchestrator = os.path.join(root, "orchestrator.json")
-        self.sessions = os.path.join(root, "sessions")
-        os.makedirs(self.sessions)
-        for module, names in ((speak, ("ORCHESTRATOR_FILE", "SESSIONS_DIR")), (brief, ("ORCHESTRATOR_FILE", "SETTINGS_FILE"))):
-            for name in names:
-                value = {"ORCHESTRATOR_FILE": self.orchestrator, "SESSIONS_DIR": self.sessions, "SETTINGS_FILE": self.settings}[name]
-                patcher = mock.patch.object(module, name, value)
-                patcher.start()
-                self.addCleanup(patcher.stop)
+        os.makedirs(os.path.join(root, "sessions"))
+        for name, value in (("NOTCHVOICE_DIR", root), ("SESSIONS_DIR", os.path.join(root, "sessions")),
+                            ("HANDOFF_DIR", os.path.join(root, "handoffs")),
+                            ("ORCHESTRATOR_FILE", os.path.join(root, "orchestrator.json"))):
+            patcher = mock.patch.object(sessions, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.alive = {"state": "idle", "pid": os.getpid(), "process": sessions.process_info(os.getpid())[2], "updated": time.time()}
 
-    def write(self, path, data):
-        with open(path, "w") as f:
+    def status(self, session, data):
+        with open(os.path.join(sessions.SESSIONS_DIR, f"{session}.json"), "w") as f:
             json.dump(data, f)
 
-    def test_everyone_speaks_until_the_mode_is_on_and_a_session_claims_it(self):
-        self.assertFalse(speak.silenced({"session_id": "worker"}, {}))
-        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
-        self.write(self.orchestrator, {"session_id": "boss"})
-        self.assertTrue(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
-        self.assertFalse(speak.silenced({"session_id": "boss"}, {"orchestrator": True}))
-        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": False}))
+    def claim(self, session):
+        with open(sessions.ORCHESTRATOR_FILE, "w") as f:
+            json.dump({"session_id": session}, f)
+
+    def finished_pid(self):
+        process = subprocess.Popen(["true"])
+        process.wait()
+        return process.pid
+
+    def test_every_session_speaks_until_one_claims_it(self):
+        self.status("boss", self.alive)
+        self.assertFalse(speak.silenced({"session_id": "worker"}))
+        self.claim("boss")
+        self.assertTrue(speak.silenced({"session_id": "worker"}))
+        self.assertFalse(speak.silenced({"session_id": "boss"}))
 
     def test_samples_and_desktop_chats_always_speak(self):
-        self.write(self.orchestrator, {"session_id": "boss"})
-        self.assertFalse(speak.silenced({}, {"orchestrator": True}))
+        self.status("boss", self.alive)
+        self.claim("boss")
+        self.assertFalse(speak.silenced({}))
 
-    def test_an_ended_orchestrator_hands_the_voice_back(self):
-        self.write(self.orchestrator, {"session_id": "boss"})
-        self.write(os.path.join(self.sessions, "boss.json"), {"state": "ended"})
-        self.assertFalse(speak.silenced({"session_id": "worker"}, {"orchestrator": True}))
+    def test_a_closed_or_ended_orchestrator_hands_the_voice_back(self):
+        self.claim("boss")
+        self.status("boss", dict(self.alive, pid=self.finished_pid()))
+        self.assertIsNone(sessions.orchestrator())
+        self.status("boss", dict(self.alive, state="ended"))
+        self.assertIsNone(sessions.orchestrator())
+        self.status("boss", dict(self.alive, process="not-claude"))
+        self.assertIsNone(sessions.orchestrator())
+        os.remove(os.path.join(sessions.SESSIONS_DIR, "boss.json"))
+        self.assertIsNone(sessions.orchestrator())
+
+    def test_without_a_process_the_orchestrator_counts_as_open_for_a_while(self):
+        self.claim("boss")
+        self.status("boss", {"state": "working", "pid": None, "updated": time.time() - 60})
+        self.assertEqual(sessions.orchestrator(), "boss")
+        self.status("boss", {"state": "idle", "pid": None, "updated": time.time() - sessions.IDLE_LIFETIME - 1})
+        self.assertIsNone(sessions.orchestrator())
+
+    def test_an_unsafe_session_id_is_ignored(self):
+        self.status("boss", self.alive)
+        self.claim("../boss")
+        self.assertIsNone(sessions.orchestrator())
 
     def test_only_the_orchestrator_is_reminded_to_keep_replies_short(self):
-        self.write(self.settings, {"orchestrator": True})
-        self.write(self.orchestrator, {"session_id": "boss"})
-        with mock.patch.object(brief, "MUTE_FILE", os.path.join(self.dir.name, "missing")):
+        self.status("boss", self.alive)
+        self.claim("boss")
+        with mock.patch.object(brief, "MUTE_FILE", os.path.join(self.dir.name, "missing")), \
+                mock.patch.object(brief, "SETTINGS_FILE", os.path.join(self.dir.name, "missing.json")):
             self.assertEqual(run_main(brief, {"session_id": "worker"}), "")
             self.assertIn("read aloud", run_main(brief, {"session_id": "boss"}))
 
+    def test_a_compacted_session_gets_its_saved_state_back_once(self):
+        os.makedirs(sessions.HANDOFF_DIR)
+        with open(os.path.join(sessions.HANDOFF_DIR, "abc.md"), "w") as f:
+            f.write("## Goal\nShip the session list")
+        with mock.patch.object(sessions, "claude_process", return_value={}):
+            output = run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"})
+            self.assertIn("Ship the session list", json.loads(output)["hookSpecificOutput"]["additionalContext"])
+            self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"}), "")
+            self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")
+        self.assertEqual(os.listdir(sessions.HANDOFF_DIR), ["abc.restored.md"])
 
-class HandoffTests(unittest.TestCase):
+    def test_claim_and_release(self):
+        self.status("boss", self.alive)
+        self.status("other", self.alive)
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "boss"}), redirect_stdout(io.StringIO()) as out:
+            snapshot.claim(mock.Mock(session=""))
+        self.assertEqual(json.loads(out.getvalue())["orchestrator"], "boss")
+        self.assertEqual(sessions.orchestrator(), "boss")
+        with redirect_stdout(io.StringIO()) as out:
+            snapshot.claim(mock.Mock(session="other"))
+        self.assertEqual(json.loads(out.getvalue())["replaced"], "boss")
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "boss"}), redirect_stdout(io.StringIO()) as out:
+            snapshot.release(mock.Mock(session=""))
+        self.assertEqual(out.getvalue().strip(), "this session is not the orchestrator")
+        with redirect_stdout(io.StringIO()):
+            snapshot.release(mock.Mock(session="other"))
+        self.assertFalse(os.path.exists(sessions.ORCHESTRATOR_FILE))
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}), self.assertRaises(SystemExit):
+            snapshot.claim(mock.Mock(session=""))
+
+
+class SnapshotTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
-        for name, sub in (("SESSIONS_DIR", "sessions"), ("HANDOFF_DIR", "handoffs")):
-            os.makedirs(os.path.join(self.dir.name, sub))
-            patcher = mock.patch.object(sessions, name, os.path.join(self.dir.name, sub))
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(sessions, "SESSIONS_DIR", self.dir.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_a_compacted_session_gets_its_saved_state_back(self):
-        with open(os.path.join(self.dir.name, "handoffs", "abc.json".replace(".json", ".md")), "w") as f:
-            f.write("## Goal\nShip the session list")
-        output = run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"})
-        self.assertIn("Ship the session list", json.loads(output)["hookSpecificOutput"]["additionalContext"])
+    def test_redacts_secrets_but_keeps_paths_ids_and_short_answers(self):
+        kept = [
+            "/Users/someone/code/notch-voice/hook/notchvoice_sessions.py",
+            "session 8308086f-5419-4c79-837c-741ec42473be is done",
+            "merged as 6db44bbabcdef0123456789abcdef0123456789a",
+            "https://github.com/NCSmit/notch-voice/pull/1",
+            "1", "pr2", "yes please",
+        ]
+        for text in kept:
+            self.assertEqual(snapshot.redact(text), text)
+        for text in ("key sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "token=abc123", "Hunter2024!",
+                     "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldCB0b2tlbg=="):
+            self.assertIn("[redacted]", snapshot.redact(text))
 
-    def test_a_normal_start_adds_nothing(self):
-        self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")
+    def test_transcript_times_are_utc_all_year(self):
+        self.assertEqual(snapshot.parse_time("2026-07-01T12:00:00.000Z"), 1782907200)
+        self.assertEqual(snapshot.parse_time("2026-01-01T12:00:00Z"), 1767268800)
+        self.assertIsNone(snapshot.parse_time(None))
 
+    def transcript(self, entries):
+        path = os.path.join(self.dir.name, "t.jsonl")
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(e) for e in entries) + "\n")
+        return path
+
+    def test_lists_open_sessions_and_spots_an_interrupt(self):
+        transcript = self.transcript([
+            {"type": "user", "timestamp": "2026-10-26T10:00:00Z", "message": {"content": "Fix the login bug"}},
+            {"type": "assistant", "timestamp": "2026-10-26T10:00:05Z",
+             "message": {"model": "claude-opus-5-5", "content": [{"type": "text", "text": "Looking at it."}]}},
+            {"type": "user", "timestamp": "2026-10-26T10:01:00Z", "message": {"content": "[Request interrupted by user]"}},
+        ])
+        statuses = {
+            "busy": {"state": "working", "title": "Fix the login bug", "updated": 1793008830.0, "transcript_path": transcript},
+            "me": {"state": "idle", "updated": time.time()},
+            "gone": {"state": "ended", "updated": time.time()},
+        }
+        for session, status in statuses.items():
+            with open(os.path.join(self.dir.name, f"{session}.json"), "w") as f:
+                json.dump(status, f)
+        with mock.patch.object(sessions, "is_open", side_effect=lambda status, now=None: status["state"] != "ended"), \
+                redirect_stdout(io.StringIO()) as out:
+            snapshot.sessions(argparse.Namespace(skip="me"))
+        records = json.loads(out.getvalue())
+        self.assertEqual([r["session_id"] for r in records], ["busy"])
+        self.assertEqual((records[0]["state"], records[0]["activity"], records[0]["interrupted"]), ("idle", "Interrupted", True))
+        self.assertEqual(records[0]["recent_prompts"], ["Fix the login bug"])
+        self.assertEqual(records[0]["model"], "claude-opus-5-5")
+
+    def test_wakes_when_a_session_finishes_or_needs_you_but_not_when_one_opens(self):
+        before = {"a": {"state": "working"}}
+        self.assertEqual(snapshot.changes(before, {"a": {"state": "working"}, "new": {"state": "idle"}}), [])
+        self.assertEqual([e["session_id"] for e in snapshot.changes(before, {"a": {"state": "idle"}})], ["a"])
+        self.assertEqual([e["state"] for e in snapshot.changes({}, {"new": {"state": "waiting"}})], ["waiting"])
+
+    def test_wait_reports_what_changed_or_times_out(self):
+        rounds = iter([{"a": {"state": "working"}}, {"a": {"state": "working"}}, {"a": {"state": "idle", "title": "A"}},
+                       {"a": {"state": "idle", "title": "A"}, "b": {"state": "waiting", "title": "B"}}])
+        with mock.patch.object(snapshot, "open_sessions", side_effect=lambda skip: next(rounds)), \
+                mock.patch.object(snapshot.time, "sleep"), redirect_stdout(io.StringIO()) as out:
+            snapshot.wait(mock.Mock(session="me", timeout=60))
+        self.assertEqual([(e["session_id"], e["state"]) for e in json.loads(out.getvalue())], [("a", "idle"), ("b", "waiting")])
+        with mock.patch.object(snapshot, "open_sessions", return_value={}), mock.patch.object(snapshot.time, "sleep"), \
+                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as stop:
+            snapshot.wait(mock.Mock(session="me", timeout=0.01))
+        self.assertEqual(stop.exception.code, 2)
 
 if __name__ == "__main__":
     unittest.main()

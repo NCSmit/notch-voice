@@ -13,6 +13,8 @@ struct ClaudeSession: Identifiable, Equatable {
     let project: String
     private(set) var activity: String
     private(set) var state: State
+    /// The session that ran /orchestrator. While it is open, NotchVoice reads only its replies aloud.
+    private(set) var isOrchestrator = false
     let started: Date
     let updated: Date
     let cwd: String?
@@ -58,10 +60,19 @@ struct ClaudeSession: Identifiable, Equatable {
         return session
     }
 
-    /// Sessions that need you come first. The rest keep the order they started in, so rows don't jump around.
+    var asOrchestrator: ClaudeSession {
+        var session = self
+        session.isOrchestrator = true
+        return session
+    }
+
+    /// The orchestrator comes first, then sessions that need you. The rest keep the order they started in, so rows
+    /// don't jump around.
     static func sorted(_ sessions: [ClaudeSession]) -> [ClaudeSession] {
         sessions.sorted { a, b in
-            (a.state == .waiting) != (b.state == .waiting) ? a.state == .waiting : (a.started, a.id) < (b.started, b.id)
+            if a.isOrchestrator != b.isOrchestrator { return a.isOrchestrator }
+            if (a.state == .waiting) != (b.state == .waiting) { return a.state == .waiting }
+            return (a.started, a.id) < (b.started, b.id)
         }
     }
 }
@@ -112,6 +123,8 @@ final class SessionStore: ObservableObject {
     @Published private(set) var sessions: [ClaudeSession] = []
 
     static let directory = URL.homeDirectory.appending(path: ".claude/notchvoice/sessions")
+    // Written by the orchestrator skill's claim; it sits next to the sessions folder, so that folder is watched too.
+    static let orchestratorFile = URL.homeDirectory.appending(path: ".claude/notchvoice/orchestrator.json")
     // Status files of sessions that ended or went quiet this long ago are deleted.
     private static let pruneAge: TimeInterval = 24 * 60 * 60
     // A session that stops without a hook saying so (closed, crashed or interrupted) leaves the list within this long.
@@ -120,12 +133,19 @@ final class SessionStore: ObservableObject {
     // Only a session this quiet is checked for an interrupt, so busy ones don't have their transcript read.
     private static let interruptDelay: TimeInterval = 2
 
-    private var watcher: DispatchSourceFileSystemObject?
+    private var watchers: [DispatchSourceFileSystemObject] = []
     private var timer: Timer?
 
     func start() {
         try? FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
-        watch()
+        watch(Self.directory)
+        watch(Self.orchestratorFile.deletingLastPathComponent())
+        reload()
+    }
+
+    /// Lets every session speak again. The orchestrator keeps running, it just isn't the only voice any more.
+    func releaseOrchestrator() {
+        try? FileManager.default.removeItem(at: Self.orchestratorFile)
         reload()
     }
 
@@ -143,7 +163,9 @@ final class SessionStore: ObservableObject {
                 try? FileManager.default.removeItem(at: file)
             }
         }
-        let sorted = ClaudeSession.sorted(found)
+        let orchestrator = (try? Data(contentsOf: Self.orchestratorFile))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["session_id"] as? String
+        let sorted = ClaudeSession.sorted(found.map { $0.id == orchestrator ? $0.asOrchestrator : $0 })
         if sorted.count != sessions.count { log.info("sessions: \(sorted.count)") }
         if sorted != sessions { sessions = sorted }
         schedule(every: sorted.contains { $0.state != .idle } ? Self.busyCheckInterval : Self.idleCheckInterval)
@@ -175,8 +197,8 @@ final class SessionStore: ObservableObject {
         self.timer = timer
     }
 
-    private func watch() {
-        let descriptor = open(Self.directory.path, O_EVTONLY)
+    private func watch(_ directory: URL) {
+        let descriptor = open(directory.path, O_EVTONLY)
         guard descriptor >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write, queue: .main)
         source.setEventHandler { [weak self] in
@@ -184,6 +206,6 @@ final class SessionStore: ObservableObject {
         }
         source.setCancelHandler { close(descriptor) }
         source.resume()
-        watcher = source
+        watchers.append(source)
     }
 }

@@ -25,6 +25,7 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off, or set a keyboard shortcut for it. Turning them off mid-sentence stops the speech straight away.
 - **Permissions in the notch.** When Claude asks to run a command or edit a file, the notch shows the request with Allow and Deny.
 - **Sessions in the menu bar.** A menu bar icon lists your open Claude Code sessions and what each one is doing. Click one to go straight to it.
+- **An orchestrator.** Type `/orchestrator` in one session and it becomes the single voice over all the others: it briefs you, tells you when a session needs you, and passes your instructions on.
 - **Regular chats too.** Chats in the Claude desktop app can be read aloud as well, through a small local speak tool.
 - **Settings in one click.** The cog next to the switch opens settings for the voice, speaking speed, music volume and glow theme.
 - **Stays out of the way.** No Dock icon, and you can hide the menu bar icon. It uses almost no CPU while idle, and it opens at login.
@@ -74,7 +75,7 @@ To set it, open settings, click **Record** next to **Mute shortcut**, and press 
 The menu bar icon lists every Claude Code session that's open on your Mac, in the terminal, the Claude desktop app or an IDE. Each one shows its first prompt, its project, and what it's doing right now.
 
 <p align="center">
-  <img src="docs/sessions.png" alt="The NotchVoice menu listing four Claude Code sessions: one that needs you, one working, one being read aloud and one finished" width="397">
+  <img src="docs/sessions.png" alt="The NotchVoice menu with the orchestrator at the top, then a session that needs you, one working and two finished, and a Let Every Session Speak item" width="404">
 </p>
 
 - **What needs you comes first.** A session waiting for a permission, a question or a plan approval moves to the top with an orange hand, and the menu bar icon shows how many are waiting. The rest stay in the order they started, so they don't jump around.
@@ -82,6 +83,17 @@ The menu bar icon lists every Claude Code session that's open on your Mac, in th
 - **Always current.** A green dot means Claude is working, a waveform means its reply is being read aloud, and an empty circle means it's finished. A session leaves the list when you close it.
 
 A session that was already open when you installed NotchVoice may only appear after you restart it. To hide the icon, turn off **Show sessions in the menu bar** in settings.
+
+## Orchestrator
+
+Type `/orchestrator` in any Claude Code session to make it your orchestrator, the one voice over all your other sessions. It catches up on every open session and gives you a short spoken briefing. Then it keeps watching, and tells you as soon as a session finishes or needs you.
+
+- **One voice.** While a session is the orchestrator, NotchVoice reads only its replies aloud, and the other sessions keep working quietly. The orchestrator sits at the top of the menu with a crown. Click **Let Every Session Speak** to hear every session again, or just close the orchestrator.
+- **Passes your instructions on.** Say "tell the login session to run the tests", and it sends the message to that session. Where Claude Code can't message other sessions, it gives you the text to paste instead. It asks before passing on anything that changes a session's direction.
+- **Keeps context healthy.** When a long session's context is nearly full, it asks that session to save its working state first. After the next compaction, NotchVoice hands that state back to the session, so nothing gets lost.
+- **Learns how you work.** On request, it looks through your recent prompts for corrections you keep making, and suggests notes for Claude's memory. You can say no to any of them.
+
+The orchestrator reads your sessions' transcripts the way any Claude Code session can. Its helper redacts obvious secrets, such as API keys, before passing anything on.
 
 ## Regular Claude chats
 
@@ -131,13 +143,14 @@ NotchVoice works wherever Claude Code runs on your Mac: in the terminal, in the 
 > [!TIP]
 > The first time Claude speaks while Spotify or Music is open, macOS asks whether it may control that app. Allow it, so the music can get quieter.
 
-The installer does five things:
+The installer does six things:
 
-1. It copies four hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, `notchvoice_brief.py` for short spoken replies, and `notchvoice_sessions.py` for the sessions in the menu bar. The speak tool for desktop chats, `notchvoice_mcp.py`, goes there too. An existing file with the same name is saved with a `.bak` extension first.
+1. It copies four hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, `notchvoice_brief.py` for short spoken replies, and `notchvoice_sessions.py` for the sessions in the menu bar. The speak tool for desktop chats, `notchvoice_mcp.py`, and the orchestrator's helper, `notchvoice_snapshot.py`, go there too. An existing file with the same name is saved with a `.bak` extension first.
 2. It adds the hooks to `~/.claude/settings.json`, and keeps a backup of that file. It also denies the desktop speak tool there, so Claude Code doesn't read its replies twice.
-3. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
-4. It starts the app, which then opens at login.
-5. If the Claude desktop app is installed, it adds the speak tool to the app's `claude_desktop_config.json` and keeps a backup of that file. The desktop app rewrites that file while it's open, so if it's open, the installer makes the change again as soon as you quit it.
+3. It installs the `/orchestrator` skill in `~/.claude/skills/orchestrator/`.
+4. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
+5. It starts the app, which then opens at login.
+6. If the Claude desktop app is installed, it adds the speak tool to the app's `claude_desktop_config.json` and keeps a backup of that file. The desktop app rewrites that file while it's open, so if it's open, the installer makes the change again as soon as you quit it.
 
 On a Mac without a notch, the panel sits at the top center of the screen instead.
 
@@ -165,6 +178,8 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `$TMPDIR/claude_tts_owner` | The hook | Holds `<hook pid> <say pid>` while a reply is spoken. The glow follows this file. |
 | `$TMPDIR/claude_tts_session` | The hook | Holds `<hook pid> <session id>` while a reply is spoken, so the menu can mark that session. The app only trusts it while the hook pid matches the owner file. |
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
+| `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |
+| `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The sessions hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
 
 `$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.
 
@@ -172,7 +187,7 @@ In the desktop app's chats, Claude calls the `speak` tool from `notchvoice_mcp.p
 
 The `UserPromptSubmit` hook adds a one-line reminder to each prompt while voice replies are on and `brief` isn't turned off. The reminder asks Claude to keep its final answer to a few spoken sentences.
 
-The sessions hook runs, without making Claude wait, on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` and `SessionEnd`, and rewrites the session's status file each time. The app lists a session for as long as its Claude Code process is running. No hook runs when you interrupt Claude with Esc, so the app also checks the end of a working session's transcript for Claude Code's interrupt note.
+The sessions hook runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` and `SessionEnd`, and rewrites the session's status file each time. Only `SessionStart` makes Claude wait for it, so it can hand back saved working state after a compaction. The app lists a session for as long as its Claude Code process is running. No hook runs when you interrupt Claude with Esc, so the app also checks the end of a working session's transcript for Claude Code's interrupt note.
 
 The permission hook sends each request to the app over a Unix socket at `$TMPDIR/notchvoice.sock`, then prints the app's answer as the hook's decision. Claude Code shows its own prompt at the same time. If you answer there first, the hook sees the result in the session transcript and withdraws the card. If the app isn't running, the hook exits straight away, and Claude Code asks as usual.
 
@@ -194,7 +209,7 @@ The settings window covers everything you need day to day. If you use the hook w
 ./install.sh --uninstall
 ```
 
-This removes the app, its login item, the hooks, the speak tool, the session status files, and their entries in `settings.json` and the desktop app's config.
+This removes the app, its login item, the hooks, the speak tool, the `/orchestrator` skill, the session status files and saved working state, and their entries in `settings.json` and the desktop app's config.
 
 ## Troubleshooting
 

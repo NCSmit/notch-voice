@@ -63,7 +63,7 @@ enum SessionOpener {
 
     /// The link the Claude desktop app opens a session with, the same one its own session list hands out.
     static func desktopLink(_ desktopID: String) -> URL? {
-        guard desktopID.wholeMatch(of: /local_[0-9a-f-]+/) != nil else { return nil }
+        guard ClaudeSession.isDesktopID(desktopID) else { return nil }
         return URL(string: "claude://claude.ai/epitaxy/\(desktopID)")
     }
 

@@ -72,10 +72,15 @@ struct ClaudeSession: Identifiable, Equatable {
            registry["nameSource"] as? String != "derived" {
             session.title = name
         }
-        if let host = registry["hostSessionId"] as? String, host.wholeMatch(of: /local_[0-9a-f-]+/) != nil {
+        if let host = registry["hostSessionId"] as? String, Self.isDesktopID(host) {
             session.desktopID = host
         }
         return session
+    }
+
+    /// The Claude desktop app's session ids look like local_<uuid>. Anything else isn't used, not even in a link.
+    static func isDesktopID(_ id: String) -> Bool {
+        id.wholeMatch(of: /local_[0-9a-f-]+/) != nil
     }
 
     var asOrchestrator: ClaudeSession {
@@ -154,6 +159,8 @@ final class SessionStore: ObservableObject {
     private static let interruptDelay: TimeInterval = 2
 
     private var watchers: [DispatchSourceFileSystemObject] = []
+    // Registry entries by pid, kept until the file changes, since reload runs on every status update.
+    private var registryCache: [pid_t: (modified: Date, entry: [String: Any])] = [:]
     private var timer: Timer?
 
     func start() {
@@ -185,8 +192,9 @@ final class SessionStore: ObservableObject {
         }
         let orchestrator = (try? Data(contentsOf: Self.orchestratorFile))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["session_id"] as? String
+        registryCache = registryCache.filter { pid, _ in found.contains { $0.pid == pid } }
         let sorted = ClaudeSession.sorted(found.map { session in
-            let named = session.pid.map { session.naming(from: Self.registry(of: $0)) } ?? session
+            let named = session.pid.map { session.naming(from: registry(of: $0)) } ?? session
             return named.id == orchestrator ? named.asOrchestrator : named
         })
         if sorted.count != sessions.count { log.info("sessions: \(sorted.count)") }
@@ -202,9 +210,16 @@ final class SessionStore: ObservableObject {
         return interrupt > session.updated
     }
 
-    private static func registry(of pid: pid_t) -> [String: Any] {
-        let file = registryDirectory.appending(path: "\(pid).json")
-        return (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+    private func registry(of pid: pid_t) -> [String: Any] {
+        let file = Self.registryDirectory.appending(path: "\(pid).json")
+        guard let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date else {
+            registryCache[pid] = nil
+            return [:]
+        }
+        if let cached = registryCache[pid], cached.modified == modified { return cached.entry }
+        let entry = (try? Data(contentsOf: file)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        registryCache[pid] = (modified, entry)
+        return entry
     }
 
     /// Whether the hook's process is still running. Comparing names guards against a reused pid.

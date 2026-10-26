@@ -415,10 +415,12 @@ class SessionTests(unittest.TestCase):
         self.send("PreToolUse", tool_name="Read", tool_input={})
         self.assertEqual(sessions.claude_process.call_count, 1)
 
-    def test_a_note_added_before_the_prompt_is_not_the_title(self):
-        status = self.send("UserPromptSubmit", prompt="<system-reminder>Started by another session</system-reminder> Fix it")
+    def test_notes_added_before_the_prompt_are_left_out_of_the_title(self):
+        status = self.send("UserPromptSubmit", prompt="<system-reminder>Started by another session</system-reminder>")
         self.assertNotIn("title", status)
-        self.assertEqual(self.send("UserPromptSubmit", prompt="Fix the login bug")["title"], "Fix the login bug")
+        status = self.send("UserPromptSubmit", prompt="<system-reminder>Linked</system-reminder>\n\nMigrate the forms page")
+        self.assertEqual(status["title"], "Migrate the forms page")
+        self.assertEqual(sessions.without_notes("<Button> renders twice"), "<Button> renders twice")
 
     def test_keeps_when_the_session_started(self):
         with mock.patch.object(sessions.time, "time", return_value=100.0):
@@ -703,9 +705,10 @@ class PullRequestTests(unittest.TestCase):
             {"name": "Cursor Bugbot", "status": "IN_PROGRESS", "conclusion": ""},
             {"name": "deploy", "status": "COMPLETED", "conclusion": "SKIPPED"},
             {"context": "ci/legacy", "state": "ERROR"},
+            {"name": "CI", "status": "COMPLETED", "conclusion": "ACTION_REQUIRED"},
         ]
         self.assertEqual(snapshot.check_counts(rollup),
-                         {"passing": 1, "failing": 2, "pending": 1, "skipped": 1, "failingChecks": ["lint", "ci/legacy"]})
+                         {"passing": 1, "failing": 2, "pending": 2, "skipped": 1, "failingChecks": ["lint", "ci/legacy"]})
 
     def test_finds_the_pr_a_session_opened(self):
         transcript = self.write("sessions", "t.jsonl", "\n".join(json.dumps(e) for e in [
@@ -714,8 +717,14 @@ class PullRequestTests(unittest.TestCase):
             {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "gh pr create --fill"}}]}},
             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b",
                                                       "content": [{"type": "text", "text": "https://github.com/o/r/pull/12\n"}]}]}},
-        ]))
+        ] + [{"type": "assistant", "message": {"content": [{"type": "text", "text": "x" * 1000}]}}] * 4000))
         self.assertEqual(snapshot.opened_pr(transcript), "https://github.com/o/r/pull/12")
+        mcp = self.write("sessions", "m.jsonl", "\n".join(json.dumps(e) for e in [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "c", "name": "mcp__github__create_pull_request", "input": {}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "c", "content": "Created https://github.com/o/r/pull/30"}]}},
+        ]))
+        self.assertEqual(snapshot.opened_pr(mcp), "https://github.com/o/r/pull/30")
+        self.assertIsNone(snapshot.opened_pr(os.path.join(self.dir.name, "missing.jsonl")))
 
     def test_asks_gh_and_shapes_the_answer(self):
         answer = {"number": 12, "title": "Fix it", "url": "https://github.com/o/r/pull/12", "state": "OPEN", "isDraft": False,
@@ -754,6 +763,11 @@ class PullRequestTests(unittest.TestCase):
         records = {r["session_id"]: r for r in json.loads(out.getvalue())}
         self.assertEqual(records["desk"]["name"], "Desktop work")
         self.assertIsNone(records["term"]["pr"])
+        self.write("sessions", "nowhere.json", dict(alive, pid=45))
+        with mock.patch.object(sessions, "is_open", return_value=True), \
+                mock.patch.object(snapshot, "pull_request", return_value=None), redirect_stdout(io.StringIO()) as out:
+            snapshot.prs(argparse.Namespace(skip="me", all=False))
+        self.assertIsNone({r["session_id"]: r for r in json.loads(out.getvalue())}["nowhere"]["pr_from"])
 
 if __name__ == "__main__":
     unittest.main()

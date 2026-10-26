@@ -234,7 +234,8 @@ def check_counts(rollup):
     for check in rollup or []:
         status = (check.get("status") or "").upper()
         conclusion = (check.get("conclusion") or check.get("state") or "").upper()
-        if status and status != "COMPLETED" or conclusion in ("PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS"):
+        # ACTION_REQUIRED is a run waiting for someone to approve it, such as CI on a pull request from a fork.
+        if status and status != "COMPLETED" or conclusion in ("PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "ACTION_REQUIRED"):
             counts["pending"] += 1
         elif conclusion in ("SUCCESS", "NEUTRAL"):
             counts["passing"] += 1
@@ -246,20 +247,37 @@ def check_counts(rollup):
     return counts
 
 
+def creates_pr(block):
+    tool = str(block.get("name") or "").lower()
+    return "gh pr create" in str((block.get("input") or {}).get("command", "")) or "create_pull_request" in tool
+
+
 def opened_pr(transcript):
-    """The last pull request the session opened itself, from what its `gh pr create` printed."""
-    commands, found = {}, None
-    for entry in tail_entries(transcript):
-        content = (entry.get("message") or {}).get("content")
-        for block in content if isinstance(content, list) else []:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "tool_use":
-                commands[block.get("id")] = str((block.get("input") or {}).get("command", ""))
-            elif block.get("type") == "tool_result" and "gh pr create" in commands.get(block.get("tool_use_id"), ""):
-                body = block.get("content")
-                urls = PR_URL.findall(body if isinstance(body, str) else text_of(body))
-                found = urls[-1] if urls else found
+    """The last pull request the session opened itself, from what `gh pr create` or a create-pull-request tool
+    returned. The whole transcript is read, since a PR is often opened long before the tail, but only lines that can
+    matter are parsed."""
+    creating, found = set(), None
+    try:
+        with open(transcript, "rb") as f:
+            for line in f:
+                if b"tool_use" not in line and b"/pull/" not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                content = (entry.get("message") or {}).get("content") if isinstance(entry, dict) else None
+                for block in content if isinstance(content, list) else []:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use" and creates_pr(block):
+                        creating.add(block.get("id"))
+                    elif block.get("type") == "tool_result" and block.get("tool_use_id") in creating:
+                        body = block.get("content")
+                        urls = PR_URL.findall(body if isinstance(body, str) else text_of(body))
+                        found = urls[-1] if urls else found
+    except OSError:
+        return None
     return found
 
 
@@ -314,7 +332,7 @@ def prs(args):
             "desktop_session_id": found.get("desktop_session_id"),
             "cwd": status.get("cwd"),
             "pr": pr,
-            "pr_from": "opened by the session" if target[0] == "url" else "the folder's branch",
+            "pr_from": None if not target[1] else "opened by the session" if target[0] == "url" else "the folder's branch",
         })
     print(json.dumps(out, indent=1))
 

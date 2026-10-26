@@ -54,6 +54,16 @@ def shorten(text, limit):
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
+def without_notes(prompt):
+    """The prompt without the <tag>…</tag> notes Claude Code or another session puts in front of what the user asked."""
+    text = prompt or ""
+    while True:
+        match = re.match(r"\s*<([A-Za-z][\w-]*)>.*?</\1>", text, flags=re.S)
+        if not match:
+            return text.strip()
+        text = text[match.end():]
+
+
 def first_sentence(text):
     text = re.sub(r"```.*?```", " ", text or "", flags=re.S)
     text = re.sub(r"[*_`#>]", "", text)
@@ -203,9 +213,9 @@ def updated_status(previous, payload, now, process=None):
         status["project"] = os.path.basename(payload["cwd"].rstrip("/")) or payload["cwd"]
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt") or ""
-        # Prompts that start with a tag are notes Claude Code or another session added, not what the user asked.
-        if not status.get("title") and prompt.strip() and not prompt.lstrip().startswith("<"):
-            status["title"] = shorten(prompt, TITLE_LENGTH)
+        asked = without_notes(prompt)
+        if not status.get("title") and asked:
+            status["title"] = shorten(asked, TITLE_LENGTH)
         status["activity"] = "Thinking"
     elif event in ("PreToolUse", "PermissionRequest") and payload.get("tool_name") in WAITING_TOOLS:
         status["state"] = "waiting"

@@ -93,11 +93,28 @@ Type `/orchestrator` in any Claude Code session to make it your orchestrator, th
 - **Passes your instructions on.** Say "tell the login session to run the tests", and it sends the message to that session. Where Claude Code can't message other sessions, it gives you the text to paste instead. It asks before passing on anything that changes a session's direction.
 - **Keeps context healthy.** When a long session's context is nearly full, it asks that session to save its working state first. After the next compaction, NotchVoice hands that state back to the session, so nothing gets lost.
 - **Knows your pull requests.** It tells you how each session's pull request is doing: checks passing or failing, changes requested, merged. For sessions in the Claude desktop app it asks the app, which already keeps track. For other sessions it asks GitHub with the `gh` command, once per session and only while it briefs you.
+- **Talk to it from anywhere.** Say "Hey Jarvis", or use the talk shortcut, and speak. See [Talk to the orchestrator](#talk-to-the-orchestrator).
 - **Learns how you work.** On request, it looks through your recent prompts for corrections you keep making, and suggests notes for Claude's memory. You can say no to any of them.
 
 The orchestrator reads your sessions' transcripts the way any Claude Code session can. Its helper redacts obvious secrets, such as API keys, before passing anything on.
 
 The first time, Claude Code asks before the orchestrator runs its helper and before it writes its notes in `~/.claude/orchestrator/`. Allow both for good, so a briefing isn't held up by a prompt you can't see. NotchVoice doesn't allow these for you, because then any session could write notes that the orchestrator trusts.
+
+## Talk to the orchestrator
+
+Speak to your orchestrator without going to its window. Your words go to the session where you ran `/orchestrator`, and it answers out loud.
+
+- **Say "Hey Jarvis".** Turn on **Listen for "Hey Jarvis"** in settings, then say the phrase and your message in one go, such as "Hey Jarvis, which session needs me?". A pause sends it. You can give it another name in settings.
+- **Or use the talk shortcut.** Set it in settings, and choose whether you hold it while you speak and let go to send, or press it once to start and pause or press again to send.
+- **See and hear what's going on.** The notch shows your words as you speak, and a short sound marks the start and the send. Say "cancel" at the end, or click ✕, to stop without sending.
+- **Replies wait for you.** While you speak, a reply that's playing pauses, as it does when you dictate.
+- **On your Mac only.** Your words are recognised on this Mac, from its built-in microphone, so Bluetooth headphones stay in their high-quality mode. The first time, macOS asks to allow the microphone and speech recognition.
+
+While **Listen for "Hey Jarvis"** is on and an orchestrator is open, the microphone stays on, and macOS shows its orange dot. With it off, the microphone is only used while you talk.
+
+Turning NotchVoice off stops all of this too: it stops listening, and the talk shortcut does nothing until you turn it back on.
+
+Anything that can run a command can also send the orchestrator a message, such as a Shortcut you start with "Hey Siri": `python3 ~/.claude/hooks/notchvoice_snapshot.py tell "Which session needs me?"`. Claude Code sessions can't. Since a message could come from anywhere on your Mac, the orchestrator answers questions straight away but reads anything else back to you, and waits for your yes, before it acts.
 
 ## Regular Claude chats
 
@@ -124,6 +141,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
 - **Permissions.** Turn permission requests in the notch on or off.
 - **Sessions.** Show or hide your sessions in the menu bar.
+- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, and set the talk shortcut and whether you hold or press it.
 - **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
 
 <p align="center">
@@ -184,6 +202,7 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `$TMPDIR/notchvoice_dictating` | The app | Kept fresh while a dictation app uses the microphone. The Stop hook holds new replies back and pauses the one speaking while it's fresh, and treats it as gone once it's 5 seconds old, so speech never stays stuck if the app quits. |
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
 | `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |
+| `~/.claude/notchvoice/inbox/<time>.json` | `notchvoice_snapshot.py tell` | A message for the orchestrator. Its watcher reads and removes each one, and drops any older than an hour, since acting on a stale instruction is worse than missing it. |
 | `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The handoff hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
 
 `$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.

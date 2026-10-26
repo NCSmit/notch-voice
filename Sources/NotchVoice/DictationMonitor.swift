@@ -32,6 +32,8 @@ final class DictationMonitor: ObservableObject {
 
     private var listeners: [Listened: AudioObjectPropertyListenerBlock] = [:]
     private var isCapturing = false
+    private var appIsCapturing = false
+    private var isHeld = false
     private var graceTimer: Timer?
     private var refreshTimer: Timer?
 
@@ -53,6 +55,12 @@ final class DictationMonitor: ObservableObject {
         try? FileManager.default.removeItem(at: Self.flagFile)
     }
 
+    /// Counts NotchVoice's own listening, while the user speaks a message, as dictation too.
+    func hold(_ held: Bool) {
+        isHeld = held
+        setCapturing(appIsCapturing || isHeld)
+    }
+
     /// Listens for `selector` on each of `objects`, afresh each time their list changes, since Core Audio can give a new
     /// process the id of one that just went away. Then checks again who is capturing.
     @available(macOS 14.2, *)
@@ -68,7 +76,8 @@ final class DictationMonitor: ObservableObject {
 
     @available(macOS 14.2, *)
     private func check() {
-        setCapturing(Self.audioProcesses().contains(where: Self.isDictating))
+        appIsCapturing = Self.audioProcesses().contains(where: Self.isDictating)
+        setCapturing(appIsCapturing || isHeld)
     }
 
     private func setCapturing(_ capturing: Bool) {

@@ -15,6 +15,7 @@ struct NotchMetrics: Equatable {
     var closedSize: CGSize { CGSize(width: notch.width + 2 * Self.closedTopRadius, height: notch.height) }
     var openSize: CGSize { CGSize(width: max(360, notch.width + 170), height: notch.height + 58) }
     var permissionSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 152) }
+    var talkSize: CGSize { CGSize(width: max(440, notch.width + 250), height: notch.height + 64) }
     var windowSize: CGSize { CGSize(width: permissionSize.width + 2 * Self.glowMargin, height: permissionSize.height + Self.glowMargin) }
 
     @MainActor
@@ -37,6 +38,7 @@ final class NotchState: ObservableObject {
     @Published var isPreviewingGlow = false
     @Published var prompt: PermissionPrompt?
     @Published var pendingCount = 0
+    @Published var talk: TalkController.Card?
     @Published var metrics = NotchMetrics(notch: CGSize(width: 185, height: 32), hasNotch: false)
 }
 
@@ -54,11 +56,14 @@ final class NotchController {
     private var isMenuOpen = false
     private var themeChanges: AnyCancellable?
     private var permissionChanges: AnyCancellable?
+    private var talkChanges: AnyCancellable?
     private var glowPreview = 0
 
-    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, openSettings: @escaping @MainActor () -> Void) {
+    init(voice: VoiceController, preferences: Preferences, permissions: PermissionCenter, talk: TalkController,
+         openSettings: @escaping @MainActor () -> Void) {
         self.voice = voice
-        let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer, openSettings: openSettings)
+        let root = NotchRootView(state: state, voice: voice, preferences: preferences, answer: permissions.answer,
+                                 cancelTalk: talk.cancel, openSettings: openSettings)
         let host = NotchHostingView(rootView: root)
         host.sizingOptions = []
         panel.contentView = host
@@ -72,6 +77,9 @@ final class NotchController {
         }
         permissionChanges = permissions.$queue.sink { [weak self] queue in
             MainActor.assumeIsolated { self?.showPermission(queue.first, count: queue.count) }
+        }
+        talkChanges = talk.$card.removeDuplicates().sink { [weak self] card in
+            MainActor.assumeIsolated { self?.showTalk(card) }
         }
         let center = NotificationCenter.default
         observers = [
@@ -107,6 +115,11 @@ final class NotchController {
         return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
     }
 
+    private var talkZone: CGRect {
+        let size = state.metrics.talkSize
+        return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
+    }
+
     private var panelZone: CGRect {
         let size = state.metrics.openSize
         return CGRect(x: screenFrame.midX - size.width / 2, y: screenFrame.maxY - size.height, width: size.width, height: size.height + 8)
@@ -138,6 +151,10 @@ final class NotchController {
         let now = Date()
         if state.prompt != nil {
             setInteractive(permissionZone.contains(mouse) || isMenuOpen)
+            return
+        }
+        if state.talk != nil {
+            setInteractive(talkZone.contains(mouse))
             return
         }
         if state.isOpen {
@@ -188,6 +205,20 @@ final class NotchController {
         if prompt != nil {
             startTracking()
         } else {
+            setInteractive(false)
+            track()
+        }
+    }
+
+    private func showTalk(_ card: TalkController.Card?) {
+        let wasShown = state.talk != nil
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+            state.talk = card
+            if card != nil { state.isOpen = false }
+        }
+        if card != nil {
+            startTracking()
+        } else if wasShown {
             setInteractive(false)
             track()
         }

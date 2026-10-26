@@ -54,7 +54,7 @@ if os.path.exists(path):
         f.write("\n")
 EOF
   rm -f "$HOOKS/speak.py" "$HOOKS/notchvoice_permission.py" "$HOOKS/notchvoice_brief.py" "$HOOKS/notchvoice_mcp.py" "$HOOKS/notchvoice_sessions.py" "$HOOKS/notchvoice_handoff.py" "$HOOKS/notchvoice_snapshot.py" "$HOME/.claude/tts_off" "$HOME/.claude/tts_settings.json"
-  rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/notchvoice/handoffs" "$HOME/.claude/skills/orchestrator"
+  rm -rf "$HOME/.claude/notchvoice/sessions" "$HOME/.claude/notchvoice/handoffs" "$HOME/.claude/notchvoice/inbox" "$HOME/.claude/skills/orchestrator"
   rm -f "$HOME/.claude/notchvoice/orchestrator.json"
   rmdir "$HOME/.claude/notchvoice" 2>/dev/null || true
   python3 hook/notchvoice_desktop.py

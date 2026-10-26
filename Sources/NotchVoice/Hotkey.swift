@@ -68,15 +68,21 @@ final class Hotkey {
 
     private(set) var shortcut: Shortcut?
     private let action: @MainActor () -> Void
+    private let release: (@MainActor () -> Void)?
     private let id: EventHotKeyID
     nonisolated(unsafe) private var registration: EventHotKeyRef?
     nonisolated(unsafe) private var handler: EventHandlerRef?
 
-    init(action: @escaping @MainActor () -> Void) {
+    /// `release`, when given, is called when the shortcut's keys are let go, for hold-to-talk.
+    init(action: @escaping @MainActor () -> Void, release: (@MainActor () -> Void)? = nil) {
         self.action = action
+        self.release = release
         id = EventHotKeyID(signature: Self.signature, id: Self.nextID)
         Self.nextID += 1
-        var pressed = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var events = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
         InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
             var pressedID = EventHotKeyID()
             guard let event, let userData,
@@ -86,8 +92,9 @@ final class Hotkey {
                   ) == noErr
             else { return OSStatus(eventNotHandledErr) }
             let hotkey = Unmanaged<Hotkey>.fromOpaque(userData).takeUnretainedValue()
-            return MainActor.assumeIsolated { hotkey.handlePress(of: pressedID) }
-        }, 1, &pressed, Unmanaged.passUnretained(self).toOpaque(), &handler)
+            let isRelease = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+            return MainActor.assumeIsolated { hotkey.handle(pressedID, isRelease: isRelease) }
+        }, events.count, &events, Unmanaged.passUnretained(self).toOpaque(), &handler)
     }
 
     deinit {
@@ -114,9 +121,13 @@ final class Hotkey {
         return true
     }
 
-    private func handlePress(of pressedID: EventHotKeyID) -> OSStatus {
+    private func handle(_ pressedID: EventHotKeyID, isRelease: Bool) -> OSStatus {
         guard pressedID.signature == id.signature, pressedID.id == id.id else { return OSStatus(eventNotHandledErr) }
-        action()
+        if isRelease {
+            release?()
+        } else {
+            action()
+        }
         return noErr
     }
 }

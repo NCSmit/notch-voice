@@ -219,6 +219,7 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
 | `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |
 | `~/.claude/notchvoice/inbox/<time>.json` | `notchvoice_snapshot.py tell` | A message for the orchestrator. Its watcher reads and removes each one, and drops any older than an hour, since acting on a stale instruction is worse than missing it. |
+| `~/.claude/notchvoice/permissions.log` | The permission hook | One line per permission request: when, which session and tool, and what happened, such as answered in the notch, answered in Claude, or the app wasn't running. It never holds the command or file. Kept under about 1 MB. If NotchVoice restarts while a card shows, the hook sends the card again. |
 | `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The handoff hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
 
 `$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.

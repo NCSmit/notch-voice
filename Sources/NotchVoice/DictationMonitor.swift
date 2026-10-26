@@ -8,7 +8,7 @@ private let log = Logger(subsystem: "local.notchvoice", category: "dictation")
 ///
 /// Core Audio says which processes are capturing the microphone (macOS 14.2 and later). It doesn't announce when a
 /// process starts capturing, but it does announce when an audio device or a process starts or stops running, so
-/// NotchVoice checks again on each of those, and nothing is polled. Only dictation apps count: Wispr Flow and Apple's own dictation. While one captures,
+/// NotchVoice checks again on each of those, and nothing is polled. Only dictation apps count, so far Wispr Flow. While one captures,
 /// and for a moment after, the flag file $TMPDIR/notchvoice_dictating is kept fresh. speak.py holds a reply back while
 /// it is fresh and pauses one already speaking. If NotchVoice quits, the flag goes stale within seconds, so speech is
 /// never left stuck.
@@ -17,8 +17,9 @@ final class DictationMonitor: ObservableObject {
     @Published private(set) var isDictating = false
 
     nonisolated static let flagFile = URL(filePath: NSTemporaryDirectory()).appending(path: "notchvoice_dictating")
-    /// Bundle ids of dictation apps. Their helper processes, such as Wispr Flow's, have ids that start with these.
-    nonisolated static let dictationApps = ["com.electron.wispr-flow", "com.apple.SpeechRecognitionCore", "com.apple.assistant"]
+    /// Bundle ids of dictation apps whose microphone use has been checked by hand. Their helper processes, such as
+    /// Wispr Flow's com.electron.wispr-flow.accessibility-mac-app, have ids that start with these.
+    nonisolated static let dictationApps = ["com.electron.wispr-flow"]
     // How long dictation counts as going on after the microphone is released, so a pause between phrases isn't a gap.
     private static let grace: TimeInterval = 1.5
     // speak.py treats a flag older than 5 s as gone, so it is refreshed well within that.

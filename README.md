@@ -21,7 +21,7 @@ Hear every Claude Code reply spoken aloud, and allow or deny Claude's requests r
 - **Spoken replies.** Claude Code reads each reply aloud as soon as it finishes. Speech runs fully offline through macOS `say`, with markdown tidied up and code blocks skipped.
 - **A notch that glows.** A soft, shifting glow surrounds the notch while Claude talks.
 - **Short spoken replies.** While voice replies are on, Claude is reminded with every prompt to answer in a few sentences, so replies are quick to listen to.
-- **Never talks over you.** While you dictate with Wispr Flow or Apple's dictation, a reply that's speaking pauses and picks up where it left off when you stop. New replies wait until you're done.
+- **Never talks over you.** While you dictate with Wispr Flow, a reply that's speaking pauses and picks up where it left off when you stop. New replies wait until you're done.
 - **Music steps aside.** Spotify and Apple Music get quieter while Claude speaks, then return to the volume they were at.
 - **Controls in the notch.** Hover over the notch to turn voice replies on or off, or set a keyboard shortcut for it. Turning them off mid-sentence stops the speech straight away.
 - **Permissions in the notch.** When Claude asks to run a command or edit a file, the notch shows the request with Allow and Deny.

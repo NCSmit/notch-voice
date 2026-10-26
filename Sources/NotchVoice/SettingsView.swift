@@ -43,9 +43,9 @@ final class SettingsWindowController {
 }
 
 struct SettingsView: View {
-    static let size = CGSize(width: 470, height: 1384)
-    /// The room the Wispr Flow row and its longer footer take, when Wispr Flow is installed.
-    static let wisprFlowHeight: CGFloat = 52
+    static let size = CGSize(width: 470, height: 1150)
+    /// The room the Wispr Flow row takes, when Wispr Flow is installed.
+    static let wisprFlowHeight: CGFloat = 37
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -58,7 +58,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             header
             Form {
-                Section {
+                Section("Voice") {
                     LabeledContent("Voice") { voiceMenu }
                     LabeledContent("Speed") {
                         HStack(spacing: 10) {
@@ -76,14 +76,12 @@ struct SettingsView: View {
                             .buttonStyle(.link)
                             .help("Opens Spoken Content in System Settings, where your Mac's voice is chosen")
                     }
-                    Toggle("Keep spoken replies short", isOn: keepsRepliesShort)
-                } header: {
-                    Text("Voice")
-                } footer: {
-                    Text("Reminds Claude to answer in a few sentences while voice replies are on.")
-                }
-                Section {
-                    LabeledContent("Music volume") {
+                    LabeledContent {
+                        Toggle("Keep spoken replies short", isOn: keepsRepliesShort).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Keep spoken replies short", info: "Reminds Claude to answer in a few sentences while voice replies are on.")
+                    }
+                    LabeledContent {
                         HStack(spacing: 8) {
                             Image(systemName: "speaker.fill").foregroundStyle(.secondary)
                             Slider(value: musicVolume, in: 0...1)
@@ -93,31 +91,34 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                                 .frame(width: 38, alignment: .trailing)
                         }
+                    } label: {
+                        InfoLabel("Music volume", info: "Spotify and Apple Music turn down to this level while Claude speaks.")
                     }
-                } header: {
-                    Text("Music")
-                } footer: {
-                    Text("Spotify and Apple Music turn down to this level while Claude speaks.")
                 }
                 Section("Glow") {
                     themePicker
                 }
-                Section {
-                    Toggle("Ask for permission in the notch", isOn: asksForPermission)
-                } header: {
-                    Text("Permissions")
-                } footer: {
-                    Text("Claude's own prompt still works too, and the first answer counts.")
+                Section("Sessions") {
+                    LabeledContent {
+                        Toggle("Ask for permission in the notch", isOn: asksForPermission).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Ask for permission in the notch", info: "Claude's own prompt still works too, and the first answer counts.")
+                    }
+                    LabeledContent {
+                        Toggle("Show sessions in the menu bar", isOn: showsSessionsInMenuBar).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel("Show sessions in the menu bar", info: "Lists your open Claude Code sessions. Click one to go to its window.")
+                    }
                 }
-                Section {
-                    Toggle("Show sessions in the menu bar", isOn: showsSessionsInMenuBar)
-                } header: {
-                    Text("Sessions")
-                } footer: {
-                    Text("Lists your open Claude Code sessions. Click one to go to its window.")
-                }
-                Section {
-                    Toggle("Listen for \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}", isOn: listensForWakePhrase)
+                Section("Talk to the orchestrator") {
+                    LabeledContent {
+                        Toggle(listenTitle, isOn: listensForWakePhrase).labelsHidden().toggleStyle(.switch)
+                    } label: {
+                        InfoLabel(listenTitle, info: talkInfo)
+                        if preferences.listensForWakePhrase {
+                            Text("The microphone stays on while an orchestrator is open.")
+                        }
+                    }
                     LabeledContent("Name") {
                         TextField("Name", text: $wakeNameDraft, prompt: Text(Preferences.defaultWakeName))
                             .labelsHidden()
@@ -130,8 +131,46 @@ struct SettingsView: View {
                             }
                             .onDisappear(perform: saveWakeName)
                     }
+                    LabeledContent {
+                        HStack(spacing: 10) {
+                            Slider(value: pauseBeforeSending, in: TalkPolicy.pauses, step: 0.5)
+                            Text(String(format: "%.1f s", preferences.pauseBeforeSending))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    } label: {
+                        InfoLabel("Pause before sending", info: "How long a pause sends a message after \(wakePhrase) or a press of the talk shortcut. Holding the shortcut down sends when you let go.")
+                    }
+                    if preferences.hasWisprFlow {
+                        LabeledContent {
+                            Picker("Write out messages with", selection: transcriber) {
+                                Text("Apple (on this Mac)").tag(Transcriber.apple)
+                                Text("Wispr Flow").tag(Transcriber.wisprFlow)
+                            }
+                            .labelsHidden()
+                            .fixedSize()
+                        } label: {
+                            InfoLabel("Write out messages with", info: "Apple's recognizer works on this Mac. With Wispr Flow, wait for the sound before you speak: Wispr Flow writes out your message, and NotchVoice keeps the keyboard until it\u{2019}s done.")
+                        }
+                    }
+                }
+                .onAppear { wakeNameDraft = preferences.wakeName }
+                Section("Shortcuts") {
                     ShortcutRecorder(
-                        title: "Talk shortcut",
+                        title: "Mute",
+                        shortcut: preferences.muteShortcut,
+                        setShortcut: preferences.setMuteShortcut,
+                        pauseShortcut: preferences.pauseShortcuts
+                    )
+                    ShortcutRecorder(
+                        title: "Skip the reply",
+                        shortcut: preferences.skipShortcut,
+                        setShortcut: preferences.setSkipShortcut,
+                        pauseShortcut: preferences.pauseShortcuts
+                    )
+                    ShortcutRecorder(
+                        title: "Talk to the orchestrator",
                         shortcut: preferences.talkShortcut,
                         setShortcut: preferences.setTalkShortcut,
                         pauseShortcut: preferences.pauseShortcuts
@@ -140,41 +179,8 @@ struct SettingsView: View {
                         Text("Holding it down").tag(TalkMode.hold)
                         Text("Pressing it to start").tag(TalkMode.press)
                     }
-                    LabeledContent("Pause before sending") {
-                        HStack(spacing: 10) {
-                            Slider(value: pauseBeforeSending, in: TalkPolicy.pauses, step: 0.5)
-                            Text(String(format: "%.1f s", preferences.pauseBeforeSending))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 40, alignment: .trailing)
-                        }
-                    }
-                    .help("How long a pause sends a message after \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D} or a press of the talk shortcut. Holding the shortcut down sends when you let go.")
-                    if preferences.hasWisprFlow {
-                        Picker("Write out messages with", selection: transcriber) {
-                            Text("Apple (on this Mac)").tag(Transcriber.apple)
-                            Text("Wispr Flow").tag(Transcriber.wisprFlow)
-                        }
-                    }
-                } header: {
-                    Text("Talk to the orchestrator")
-                } footer: {
-                    Text(talkFooter)
                 }
-                .onAppear { wakeNameDraft = preferences.wakeName }
-                Section("General") {
-                    ShortcutRecorder(
-                        title: "Mute shortcut",
-                        shortcut: preferences.muteShortcut,
-                        setShortcut: preferences.setMuteShortcut,
-                        pauseShortcut: preferences.pauseShortcuts
-                    )
-                    ShortcutRecorder(
-                        title: "Skip shortcut",
-                        shortcut: preferences.skipShortcut,
-                        setShortcut: preferences.setSkipShortcut,
-                        pauseShortcut: preferences.pauseShortcuts
-                    )
+                Section {
                     Toggle("Open at Login", isOn: opensAtLogin)
                 }
             }
@@ -325,13 +331,16 @@ struct SettingsView: View {
         Binding(get: { preferences.transcriber }, set: { preferences.setTranscriber($0) })
     }
 
-    private var talkFooter: String {
-        let phrase = "\u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}"
-        let microphone = "While listening is on and an orchestrator is open, the microphone stays on."
-        guard preferences.hasWisprFlow, preferences.transcriber == .wisprFlow else {
-            return "Say \(phrase) or use the shortcut, then speak to the session where you ran /orchestrator. Your words are recognised on this Mac. \(microphone)"
-        }
-        return "Say \(phrase) or use the shortcut, wait for the sound, then speak to the session where you ran /orchestrator. Wispr Flow writes out your message, and NotchVoice keeps the keyboard until it\u{2019}s done. \(microphone)"
+    private var wakePhrase: String {
+        "\u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}"
+    }
+
+    private var listenTitle: String {
+        "Listen for \(wakePhrase)"
+    }
+
+    private var talkInfo: String {
+        "Say \(wakePhrase) or use the talk shortcut, then speak to the session where you ran /orchestrator."
     }
 
     private func saveWakeName() {
@@ -341,5 +350,50 @@ struct SettingsView: View {
 
     private var opensAtLogin: Binding<Bool> {
         Binding(get: { preferences.opensAtLogin }, set: { preferences.setOpensAtLogin($0) })
+    }
+}
+
+/// A setting's name with a small info button, so the window keeps to short labels and the longer explanation is a
+/// click or a hover away.
+struct InfoLabel: View {
+    let title: String
+    let info: String
+
+    init(_ title: String, info: String) {
+        self.title = title
+        self.info = info
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Text(title)
+            InfoButton(about: title, text: info)
+        }
+    }
+}
+
+struct InfoButton: View {
+    let about: String
+    let text: String
+    @State private var isShown = false
+
+    var body: some View {
+        Button {
+            isShown.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help(text)
+        .accessibilityLabel("About \(about)")
+        .accessibilityHint(text)
+        .popover(isPresented: $isShown, arrowEdge: .bottom) {
+            Text(text)
+                .font(.callout)
+                .frame(width: 260, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(14)
+        }
     }
 }

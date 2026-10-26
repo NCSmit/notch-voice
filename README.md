@@ -66,10 +66,10 @@ Set a keyboard shortcut once, then press it anywhere to turn voice replies on or
   <img src="docs/shortcut.png" alt="Pressing Option-Command-M switches voice replies in the notch from on to off" width="820">
 </p>
 
-To set it, open settings, click **Record** next to **Mute shortcut**, and press the keys you want. The shortcut needs at least one of ⌘, ⌥ or ⌃. Press Esc to cancel, and click ✕ to remove the shortcut. It doesn't need any extra macOS permissions.
+To set it, open settings, click **Record** next to **Mute** under **Shortcuts**, and press the keys you want. The shortcut needs at least one of ⌘, ⌥ or ⌃. Press Esc to cancel, and click ✕ to remove the shortcut. It doesn't need any extra macOS permissions.
 
 <p align="center">
-  <img src="docs/shortcut-settings.png" alt="The Mute shortcut row in NotchVoice settings, set to Option-Command-M" width="470">
+  <img src="docs/shortcut-settings.png" alt="The Mute row in the Shortcuts section of NotchVoice settings, set to Option-Command-M" width="470">
 </p>
 
 ## Sessions
@@ -144,7 +144,7 @@ This works in the Claude desktop app only. The claude.ai website and the mobile 
 Click the cog in the notch to open settings. Changes apply to the next reply, with no restart needed.
 
 <p align="center">
-  <img src="docs/settings.png" alt="The NotchVoice settings window with voice, speed, short replies, music volume, glow theme, permission, sessions, talk to the orchestrator, and mute and skip shortcut settings" width="470">
+  <img src="docs/settings.png" alt="The NotchVoice settings window with sections for the voice and music volume, the glow theme, sessions and permissions, talking to the orchestrator, and shortcuts" width="470">
 </p>
 
 - **Voice.** By default NotchVoice uses your Mac's own spoken content voice, and the menu shows its name, for example "Siri Voice 1 (System)". **Change System Voice…** opens the Spoken Content page in System Settings, where that voice is chosen. You can also choose any other installed macOS voice, and you hear a short sample as soon as you pick one.
@@ -152,11 +152,11 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Short replies.** Turn the "keep spoken replies short" reminder on or off. It's on by default.
 - **Music volume.** Choose how loud Spotify and Apple Music stay while Claude speaks, from silent to unchanged.
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
-- **Permissions.** Turn permission requests in the notch on or off.
-- **Sessions.** Show or hide your sessions in the menu bar.
-- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, set the talk shortcut and whether you hold or press it, choose how long a pause sends a message (1 to 5 seconds, 2.5 by default), and choose whether your Mac or Wispr Flow writes out your messages.
-- **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
-- **Skip shortcut.** Set a keyboard shortcut that skips the reply being read aloud.
+- **Sessions.** Turn permission requests in the notch on or off, and show or hide your sessions in the menu bar.
+- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, choose how long a pause sends a message (1 to 5 seconds, 2.5 by default), and choose whether your Mac or Wispr Flow writes out your messages.
+- **Shortcuts.** Set keyboard shortcuts that turn voice replies on or off, skip the reply being read aloud, and talk to the orchestrator, and choose whether you hold the talk shortcut or press it.
+
+The ⓘ next to a setting explains it.
 
 <p align="center">
   <img src="docs/themes.png" alt="The six glow themes around a notch: Aurora, Ember, Ocean, Mint, Neon and Moonlight" width="820">

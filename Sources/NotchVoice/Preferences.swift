@@ -5,25 +5,20 @@ final class Preferences: ObservableObject {
     private static let themeKey = "glowTheme"
     private static let muteShortcutKey = "muteShortcut"
     private static let permissionsKey = "asksForPermissionInNotch"
-    private static let pinnedKey = "keepsPanelOpen"
-    private static let wakeWordKey = "listensForWakeWord"
+    private static let menuBarKey = "showsSessionsInMenuBar"
 
     @Published private(set) var theme: GlowTheme
     @Published private(set) var opensAtLogin: Bool
     @Published private(set) var muteShortcut: Shortcut?
     @Published private(set) var asksForPermission: Bool
-    /// Once opened, the notch panel stays open until it is unpinned, instead of collapsing when the mouse leaves.
-    @Published private(set) var isPanelPinned: Bool
-    /// Listen on-device for "Hey orchestrator" to dictate a message to the orchestrator session hands-free.
-    @Published private(set) var listensForWakeWord: Bool
+    @Published private(set) var showsSessionsInMenuBar: Bool
     private let muteHotkey: Hotkey
 
     init(muteHotkey: Hotkey) {
         theme = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(GlowTheme.init(rawValue:)) ?? .aurora
         opensAtLogin = LoginItem.isEnabled
         asksForPermission = UserDefaults.standard.object(forKey: Self.permissionsKey) as? Bool ?? true
-        isPanelPinned = UserDefaults.standard.bool(forKey: Self.pinnedKey)
-        listensForWakeWord = UserDefaults.standard.bool(forKey: Self.wakeWordKey)
+        showsSessionsInMenuBar = UserDefaults.standard.object(forKey: Self.menuBarKey) as? Bool ?? true
         self.muteHotkey = muteHotkey
         muteShortcut = Self.savedMuteShortcut.flatMap { muteHotkey.register($0) ? $0 : nil }
     }
@@ -38,14 +33,9 @@ final class Preferences: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: Self.permissionsKey)
     }
 
-    func setPanelPinned(_ pinned: Bool) {
-        isPanelPinned = pinned
-        UserDefaults.standard.set(pinned, forKey: Self.pinnedKey)
-    }
-
-    func setListensForWakeWord(_ enabled: Bool) {
-        listensForWakeWord = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.wakeWordKey)
+    func setShowsSessionsInMenuBar(_ shown: Bool) {
+        showsSessionsInMenuBar = shown
+        UserDefaults.standard.set(shown, forKey: Self.menuBarKey)
     }
 
     func setOpensAtLogin(_ enabled: Bool) {

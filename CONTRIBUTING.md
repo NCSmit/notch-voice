@@ -4,16 +4,19 @@ Thanks for helping out. NotchVoice is a small project, so focused pull requests 
 
 ## How the project fits together
 
-- **`Sources/NotchVoice/`** is the macOS app, built with SwiftUI and AppKit in Swift 6. It draws the notch panel, the glow and the settings window.
-- **`hook/`** holds the three Claude Code hooks. They are Python scripts that use only the standard library:
+- **`Sources/NotchVoice/`** is the macOS app, built with SwiftUI and AppKit in Swift 6. It draws the notch panel, the glow, the menu bar icon and the settings window.
+- **`hook/`** holds the five Claude Code hooks. They are Python scripts that use only the standard library:
   - `speak.py` is the `Stop` hook. It reads Claude's replies aloud.
   - `notchvoice_permission.py` is the `PermissionRequest` hook. It sends permission requests to the notch.
   - `notchvoice_brief.py` is the `UserPromptSubmit` hook. It asks Claude to keep spoken replies short.
+  - `notchvoice_sessions.py` runs on every session event and keeps a status file per session for the menu bar. It also decides which session is the orchestrator, for the other hooks.
+  - `notchvoice_handoff.py` is a `SessionStart` hook for compactions only. It hands a session back the working state it saved.
+- **`orchestrator/SKILL.md`** is the `/orchestrator` skill. Its helper, **`hook/notchvoice_snapshot.py`**, does the deterministic work: it lists open sessions with a summary of each transcript, looks up pull requests for sessions outside the Claude desktop app, claims and releases the orchestrator, and waits for sessions to change.
 - **`hook/notchvoice_mcp.py`** is a small MCP server for chats in the Claude desktop app. Its `speak` tool runs `speak.py` with the text Claude passes in.
 - **`hook/notchvoice_desktop.py`** adds that server to the desktop app's config for `install.sh`, or removes it. The desktop app rewrites its config while it's open, so when it's open the script makes the change again after the app quits.
 - **`Tests/`** and **`hook/tests/`** hold the tests for the app and the hooks.
 
-The app and the hooks never call each other directly. They share a few files in `~/.claude/`, plus a socket in `$TMPDIR` for permission requests. The [How it works](README.md#how-it-works) section of the README lists them. If you change one side of that contract, change the other side in the same pull request.
+The app and the hooks never call each other directly. They share a few files in `~/.claude/` and `$TMPDIR`, plus a socket in `$TMPDIR` for permission requests. The [How it works](README.md#how-it-works) section of the README lists them. If you change one side of that contract, change the other side in the same pull request.
 
 ## Getting set up
 
@@ -57,10 +60,20 @@ Send a test permission request to the notch. The card appears, and the command p
 echo '{"tool_name": "Bash", "tool_input": {"command": "echo hi", "description": "Say hi"}}' | python3 hook/notchvoice_permission.py
 ```
 
+Add a test session to the menu bar. Run this in Terminal or iTerm2: the session stays listed until you close the tab, and clicking it selects that tab. The second command removes it:
+
+```bash
+echo '{"hook_event_name": "UserPromptSubmit", "session_id": "test", "cwd": "'"$PWD"'", "prompt": "Try the menu"}' | python3 hook/notchvoice_sessions.py
+```
+
+```bash
+echo '{"hook_event_name": "SessionEnd", "session_id": "test"}' | python3 hook/notchvoice_sessions.py
+```
+
 ## Code style
 
 - **Swift:** the app uses Swift 6 strict concurrency, with UI state in `@MainActor` classes. Keep types small and names descriptive. Add a comment only to explain why something is done, not what it does.
-- **Hooks:** use only the Python standard library. A hook must never break Claude Code. If something it needs is missing, it should exit quietly with no output. Keep hooks fast, because `notchvoice_brief.py` runs on every prompt.
+- **Hooks:** use only the Python standard library. A hook must never break Claude Code. If something it needs is missing, it should exit quietly with no output. Keep hooks fast, because `notchvoice_brief.py` runs on every prompt and `notchvoice_sessions.py` on every tool call.
 - **Screenshots:** when you change the UI, update the matching images in `docs/`. Use 2x PNGs with 8-bit colour.
 
 ## Pull requests

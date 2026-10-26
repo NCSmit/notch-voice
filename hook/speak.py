@@ -16,11 +16,15 @@ import sys
 import tempfile
 import time
 
+try:
+    from notchvoice_sessions import orchestrator
+except ImportError:  # installed without the sessions hook, so there is no orchestrator either
+    def orchestrator(check_name=True):
+        return None
+
 HOME = os.path.expanduser("~")
 MUTE_FILE = os.path.join(HOME, ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(HOME, ".claude", "tts_settings.json")
-ORCHESTRATOR_FILE = os.path.join(HOME, ".claude", "notchvoice", "orchestrator.json")
-SESSIONS_DIR = os.path.join(HOME, ".claude", "notchvoice", "sessions")
 DARWIN_USER_TEMP_DIR = 65537  # _CS_DARWIN_USER_TEMP_DIR in <unistd.h>
 MUSIC_APPS = ["Spotify", "Music"]
 
@@ -37,12 +41,16 @@ def user_temp_dir():
 # "<hook pid> <say pid>" of the reply currently speaking (or getting ready to).
 OWNER_FILE = os.path.join(user_temp_dir(), "claude_tts_owner")
 DUCK_FILE = os.path.join(user_temp_dir(), "claude_tts_duck.json")
-# Exists while the user is dictating (NotchVoice watches Wispr Flow and Apple dictation use the microphone).
-DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
-DICTATION_STALE_SECONDS = 15 * 60  # a flag this old was left behind by an app that quit mid-dictation
-DICTATION_MAX_WAIT = 270  # the Stop hook's timeout is 300 s
-# The session_id of the reply currently speaking, so the notch can light up that session.
+# "<hook pid> <session_id>" of the reply currently speaking, so the menu bar can mark that session. The app only trusts
+# it while the hook pid matches the owner file.
 SESSION_FILE = os.path.join(user_temp_dir(), "claude_tts_session")
+# NotchVoice keeps this file fresh while you dictate with a dictation app. One that stops being refreshed, because the
+# app quit, counts as gone after DICTATION_FRESH seconds, so a reply can't stay held or paused.
+DICTATION_FILE = os.path.join(user_temp_dir(), "notchvoice_dictating")
+DICTATION_FRESH = 5
+# The Stop hook is given 300 s. A reply still held back or paused by then is dropped, so `say` is never left stopped
+# when the hook is ended.
+DEADLINE = 280
 
 
 def is_tool_result_only(content):
@@ -90,32 +98,14 @@ def load_settings():
     return settings if isinstance(settings, dict) else {}
 
 
-def read_json(path):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def orchestrator_session(settings):
-    """The session that speaks for all the others in orchestrator mode, or None when every session speaks."""
-    if not settings.get("orchestrator"):
-        return None
-    session = read_json(ORCHESTRATOR_FILE).get("session_id")
-    if not isinstance(session, str) or not session:
-        return None
-    if read_json(os.path.join(SESSIONS_DIR, f"{session}.json")).get("state") == "ended":
-        return None
-    return session
-
-
-def silenced(payload, settings):
-    orchestrator = orchestrator_session(settings)
+def silenced(payload):
+    """While a session is the orchestrator, only its replies are read aloud. Samples and desktop chats carry no
+    session, so they always speak."""
     session = payload.get("session_id")
-    # Samples and desktop chats carry no session, so they always speak.
-    return bool(orchestrator and session and session != orchestrator)
+    if not session:
+        return False
+    boss = orchestrator()
+    return bool(boss) and session != boss
 
 
 def music_level(settings):
@@ -144,42 +134,79 @@ def is_owner():
     return bool(owner) and owner[0] == os.getpid()
 
 
-def take_over():
-    """Stop the previous reply at any stage (still preparing or already speaking) and claim the voice."""
-    for pid in read_owner():
-        if pid == os.getpid():
-            continue
+def stop(pid):
+    # A paused `say` only acts on SIGTERM once it is continued.
+    for sig in (signal.SIGTERM, signal.SIGCONT):
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.kill(pid, sig)
         except OSError:
             pass
+
+
+def take_over():
+    """Stop the previous reply at any stage (still preparing, paused or speaking) and claim the voice."""
+    for pid in read_owner():
+        if pid != os.getpid():
+            stop(pid)
     write_owner(os.getpid())
 
 
 def user_is_dictating():
+    # A voice sample is played on request from the settings window, so it never waits.
+    if os.environ.get("NOTCHVOICE_SAMPLE"):
+        return False
     try:
-        return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_STALE_SECONDS
+        return time.time() - os.path.getmtime(DICTATION_FILE) < DICTATION_FRESH
     except OSError:
         return False
 
 
-def wait_for_dictation_to_end():
-    """Never start talking over the user. Returns False if a newer reply took over while we waited."""
-    deadline = time.time() + DICTATION_MAX_WAIT
-    while user_is_dictating() and time.time() < deadline:
-        time.sleep(0.2)
-        if not is_owner():
+def wait_while_dictating(started):
+    """Never start talking over the user. False when a newer reply took over or the wait ran out."""
+    while user_is_dictating():
+        if not is_owner() or time.time() - started > DEADLINE:
             return False
-    return True
+        time.sleep(0.2)
+    return is_owner()
+
+
+def play(proc, text, started):
+    """Feeds the reply to `say`, pausing it while the user dictates and resuming where it was."""
+    paused = False
+    pending = text
+    while True:
+        try:
+            proc.communicate(pending, timeout=0.2)
+            return
+        except subprocess.TimeoutExpired:
+            pending = None
+        if paused and time.time() - started > DEADLINE:
+            stop(proc.pid)
+            proc.wait()
+            return
+        dictating = user_is_dictating()
+        if dictating != paused:
+            os.kill(proc.pid, signal.SIGSTOP if dictating else signal.SIGCONT)
+            paused = dictating
 
 
 def write_session(session_id):
+    if not isinstance(session_id, str) or not session_id:
+        return
+    temp = f"{SESSION_FILE}.{os.getpid()}"
     try:
-        if isinstance(session_id, str) and session_id:
-            with open(SESSION_FILE, "w") as f:
-                f.write(session_id)
-        else:
-            os.remove(SESSION_FILE)
+        with open(temp, "w") as f:
+            f.write(f"{os.getpid()} {session_id}")
+        os.replace(temp, SESSION_FILE)
+    except OSError:
+        pass
+
+
+def clear_session():
+    try:
+        with open(SESSION_FILE) as f:
+            if f.read().split()[:1] == [str(os.getpid())]:
+                os.remove(SESSION_FILE)
     except OSError:
         pass
 
@@ -233,7 +260,7 @@ def main():
         return
 
     settings = load_settings()
-    if silenced(payload, settings):
+    if silenced(payload):
         return
     cmd = ["say"]
     voice = settings.get("voice") or os.environ.get("CLAUDE_TTS_VOICE")
@@ -243,21 +270,25 @@ def main():
     if rate:
         cmd += ["-r", str(rate)]
 
+    started = time.time()
     take_over()
     write_session(payload.get("session_id"))
-    if not wait_for_dictation_to_end():
+    if not wait_while_dictating(started):
+        if is_owner():
+            os.remove(OWNER_FILE)
+            clear_session()
         return
     duck_music(music_level(settings))
     if not is_owner():
         return  # A newer reply took over while we were ducking; it restores the music.
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, text=True)
     write_owner(os.getpid(), proc.pid)
-    proc.communicate(text)
+    play(proc, text, started)
     # A newer reply kills this process outright, so reaching here means we finished last.
     if is_owner():
         restore_music()
         os.remove(OWNER_FILE)
-        write_session(None)
+        clear_session()
 
 if __name__ == "__main__":
     main()

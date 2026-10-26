@@ -2,15 +2,21 @@
 """UserPromptSubmit hook: while NotchVoice voice replies are on, remind Claude that its final reply is read aloud.
 
 Claude gets this note with every prompt, so every session keeps its spoken replies short. It adds nothing while
-voice replies are muted (~/.claude/tts_off exists) or when "brief" is false in ~/.claude/tts_settings.json.
+voice replies are muted (~/.claude/tts_off exists) or when "brief" is false in ~/.claude/tts_settings.json. While
+another session is the orchestrator, this one isn't heard, so it gets no note either.
 """
 import json
 import os
 import sys
 
+try:
+    from notchvoice_sessions import orchestrator
+except ImportError:  # installed without the sessions hook, so there is no orchestrator either
+    def orchestrator(check_name=True):
+        return None
+
 MUTE_FILE = os.path.join(os.path.expanduser("~"), ".claude", "tts_off")
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".claude", "tts_settings.json")
-ORCHESTRATOR_FILE = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice", "orchestrator.json")
 REMINDER = (
     "Voice replies are on, so your final message for this prompt is read aloud to the user. "
     "Keep it short: two to four plain sentences giving the high-level outcome. "
@@ -27,17 +33,12 @@ def wants_short_replies():
 
 
 def is_quiet_worker(payload):
-    # In orchestrator mode only the orchestrator is heard, so the other sessions can answer at full length.
-    try:
-        with open(SETTINGS_FILE) as f:
-            if not json.load(f).get("orchestrator"):
-                return False
-        with open(ORCHESTRATOR_FILE) as f:
-            orchestrator = json.load(f).get("session_id")
-    except (OSError, ValueError, AttributeError):
-        return False
     session = payload.get("session_id") if isinstance(payload, dict) else None
-    return bool(orchestrator and session and session != orchestrator)
+    if not session:
+        return False
+    # This runs before every prompt, so it skips the slower process-name check.
+    boss = orchestrator(check_name=False)
+    return bool(boss) and session != boss
 
 
 def main():

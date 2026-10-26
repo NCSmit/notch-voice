@@ -12,7 +12,7 @@ import sys
 try:
     from notchvoice_sessions import orchestrator
 except ImportError:  # installed without the sessions hook, so there is no orchestrator either
-    def orchestrator():
+    def orchestrator(check_name=True):
         return None
 
 MUTE_FILE = os.path.join(os.path.expanduser("~"), ".claude", "tts_off")
@@ -36,7 +36,8 @@ def is_quiet_worker(payload):
     session = payload.get("session_id") if isinstance(payload, dict) else None
     if not session:
         return False
-    boss = orchestrator()
+    # This runs before every prompt, so it skips the slower process-name check.
+    boss = orchestrator(check_name=False)
     return bool(boss) and session != boss
 
 

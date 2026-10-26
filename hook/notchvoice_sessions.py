@@ -13,8 +13,7 @@ Each event rewrites ~/.claude/notchvoice/sessions/<session_id>.json with:
   app       the bundle id of the app the session runs in, and tty its terminal, so the app can bring it forward
 Async hooks can finish out of order, so an event never overwrites a newer one.
 
-SessionStart is registered without async: after a compaction it hands the session back the working state it saved
-to ~/.claude/notchvoice/handoffs/<session_id>.md, so nothing the orchestrator asked it to keep is lost.
+It also decides which session is the orchestrator, for speak.py, the brief hook and the orchestrator's helper.
 """
 import json
 import os
@@ -25,8 +24,6 @@ import time
 
 NOTCHVOICE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "notchvoice")
 SESSIONS_DIR = os.path.join(NOTCHVOICE_DIR, "sessions")
-# The orchestrator asks a session to save its working state here before it compacts; it is handed back afterwards.
-HANDOFF_DIR = os.path.join(NOTCHVOICE_DIR, "handoffs")
 # {"session_id": ...} of the session that ran /orchestrator. While that session is open, only its replies are spoken.
 ORCHESTRATOR_FILE = os.path.join(NOTCHVOICE_DIR, "orchestrator.json")
 TITLE_LENGTH = 60
@@ -117,8 +114,9 @@ def claude_process():
     return {}
 
 
-def is_open(status, now=None):
-    """Whether a status file belongs to a session that is still open, decided the same way as the app's menu."""
+def is_open(status, now=None, check_name=True):
+    """Whether a status file belongs to a session that is still open, decided the same way as the app's menu.
+    Checking the process name guards against a reused pid, but costs a ps call, so frequent callers can skip it."""
     if not isinstance(status, dict) or status.get("state") not in ("working", "waiting", "idle"):
         return False
     pid, process = status.get("pid"), status.get("process")
@@ -129,6 +127,8 @@ def is_open(status, now=None):
             pass
         except OSError:
             return False
+        if not check_name:
+            return True
         info = process_info(pid)
         return info is not None and info[2] == process
     try:
@@ -138,12 +138,12 @@ def is_open(status, now=None):
     return age < (IDLE_LIFETIME if status.get("state") == "idle" else WORKING_LIFETIME)
 
 
-def orchestrator():
+def orchestrator(check_name=True):
     """The session id of the orchestrator while it is open, or None when every session speaks."""
     session = read(ORCHESTRATOR_FILE).get("session_id")
     if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session):
         return None
-    return session if is_open(read(os.path.join(SESSIONS_DIR, f"{session}.json"))) else None
+    return session if is_open(read(os.path.join(SESSIONS_DIR, f"{session}.json")), check_name=check_name) else None
 
 
 def read(path):
@@ -225,22 +225,6 @@ def main():
         write(path, updated_status(previous, payload, now, process))
     except OSError:
         pass
-    if payload["hook_event_name"] == "SessionStart" and payload.get("source") == "compact":
-        restore_handoff(session)
-
-
-def restore_handoff(session):
-    path = os.path.join(HANDOFF_DIR, f"{session}.md")
-    try:
-        with open(path) as f:
-            notes = f.read(20000)
-        # Handed back once, so a later compaction doesn't bring back state the session has since moved past.
-        os.replace(path, os.path.join(HANDOFF_DIR, f"{session}.restored.md"))
-    except OSError:
-        return
-    if notes.strip():
-        context = "Your conversation was just compacted. Before that, you saved this working state; carry on from it:\n\n" + notes
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
 
 
 if __name__ == "__main__":

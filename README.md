@@ -145,7 +145,7 @@ NotchVoice works wherever Claude Code runs on your Mac: in the terminal, in the 
 
 The installer does six things:
 
-1. It copies four hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, `notchvoice_brief.py` for short spoken replies, and `notchvoice_sessions.py` for the sessions in the menu bar. The speak tool for desktop chats, `notchvoice_mcp.py`, and the orchestrator's helper, `notchvoice_snapshot.py`, go there too. An existing file with the same name is saved with a `.bak` extension first.
+1. It copies five hooks to `~/.claude/hooks/`: `speak.py` for voice replies, `notchvoice_permission.py` for permission requests, `notchvoice_brief.py` for short spoken replies, `notchvoice_sessions.py` for the sessions in the menu bar, and `notchvoice_handoff.py`, which hands saved working state back after a compaction. The speak tool for desktop chats, `notchvoice_mcp.py`, and the orchestrator's helper, `notchvoice_snapshot.py`, go there too. An existing file with the same name is saved with a `.bak` extension first.
 2. It adds the hooks to `~/.claude/settings.json`, and keeps a backup of that file. It also denies the desktop speak tool there, so Claude Code doesn't read its replies twice.
 3. It installs the `/orchestrator` skill in `~/.claude/skills/orchestrator/`.
 4. It builds the app on your Mac and puts it in `~/Applications`. Because the app is built locally, macOS doesn't show a security warning.
@@ -179,7 +179,7 @@ The Stop hook does the speaking. The app gives you the controls, the glow and th
 | `$TMPDIR/claude_tts_session` | The hook | Holds `<hook pid> <session id>` while a reply is spoken, so the menu can mark that session. The app only trusts it while the hook pid matches the owner file. |
 | `~/.claude/notchvoice/sessions/<session id>.json` | The sessions hook | One status file per session: its state, title, project, current activity, and the process, app and terminal it runs in. The menu bar lists these. |
 | `~/.claude/notchvoice/orchestrator.json` | The orchestrator | Names the session that ran `/orchestrator`. While that session is open, the Stop hook speaks only its replies. **Let Every Session Speak** deletes this file. |
-| `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The sessions hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
+| `~/.claude/notchvoice/handoffs/<session id>.md` | A session the orchestrator asked | Working state saved before a compaction. The handoff hook hands it back once, after the next compaction, then renames it to `.restored.md`. |
 
 `$TMPDIR` here is your Mac's own temporary folder. The hooks look it up from macOS, because tools started by the Claude desktop app don't get the variable.
 
@@ -187,7 +187,7 @@ In the desktop app's chats, Claude calls the `speak` tool from `notchvoice_mcp.p
 
 The `UserPromptSubmit` hook adds a one-line reminder to each prompt while voice replies are on and `brief` isn't turned off. The reminder asks Claude to keep its final answer to a few spoken sentences.
 
-The sessions hook runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` and `SessionEnd`, and rewrites the session's status file each time. Only `SessionStart` makes Claude wait for it, so it can hand back saved working state after a compaction. The app lists a session for as long as its Claude Code process is running. No hook runs when you interrupt Claude with Esc, so the app also checks the end of a working session's transcript for Claude Code's interrupt note.
+The sessions hook runs, without making Claude wait, on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop` and `SessionEnd`, and rewrites the session's status file each time. The handoff hook runs only on `SessionStart` after a compaction, and Claude waits for it, so the saved working state arrives before Claude carries on. The app lists a session for as long as its Claude Code process is running. No hook runs when you interrupt Claude with Esc, so the app also checks the end of a working session's transcript for Claude Code's interrupt note.
 
 The permission hook sends each request to the app over a Unix socket at `$TMPDIR/notchvoice.sock`, then prints the app's answer as the hook's decision. Claude Code shows its own prompt at the same time. If you answer there first, the hook sees the result in the session transcript and withdraws the card. If the app isn't running, the hook exits straight away, and Claude Code asks as usual.
 

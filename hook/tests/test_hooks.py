@@ -34,6 +34,7 @@ permission = load("notchvoice_permission")
 mcp = load("notchvoice_mcp")
 desktop = load("notchvoice_desktop")
 snapshot = load("notchvoice_snapshot")
+handoff = load("notchvoice_handoff")
 
 
 def run_main(module, payload):
@@ -477,10 +478,10 @@ class OrchestratorTests(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         root = self.dir.name
         os.makedirs(os.path.join(root, "sessions"))
-        for name, value in (("NOTCHVOICE_DIR", root), ("SESSIONS_DIR", os.path.join(root, "sessions")),
-                            ("HANDOFF_DIR", os.path.join(root, "handoffs")),
-                            ("ORCHESTRATOR_FILE", os.path.join(root, "orchestrator.json"))):
-            patcher = mock.patch.object(sessions, name, value)
+        for module, name, value in ((sessions, "NOTCHVOICE_DIR", root), (sessions, "SESSIONS_DIR", os.path.join(root, "sessions")),
+                                    (sessions, "ORCHESTRATOR_FILE", os.path.join(root, "orchestrator.json")),
+                                    (handoff, "HANDOFF_DIR", os.path.join(root, "handoffs"))):
+            patcher = mock.patch.object(module, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.alive = {"state": "idle", "pid": os.getpid(), "process": sessions.process_info(os.getpid())[2], "updated": time.time()}
@@ -514,10 +515,12 @@ class OrchestratorTests(unittest.TestCase):
         self.claim("boss")
         self.status("boss", dict(self.alive, pid=self.finished_pid()))
         self.assertIsNone(sessions.orchestrator())
+        self.assertIsNone(sessions.orchestrator(check_name=False))
         self.status("boss", dict(self.alive, state="ended"))
         self.assertIsNone(sessions.orchestrator())
         self.status("boss", dict(self.alive, process="not-claude"))
         self.assertIsNone(sessions.orchestrator())
+        self.assertEqual(sessions.orchestrator(check_name=False), "boss")
         os.remove(os.path.join(sessions.SESSIONS_DIR, "boss.json"))
         self.assertIsNone(sessions.orchestrator())
 
@@ -542,15 +545,23 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("read aloud", run_main(brief, {"session_id": "boss"}))
 
     def test_a_compacted_session_gets_its_saved_state_back_once(self):
-        os.makedirs(sessions.HANDOFF_DIR)
-        with open(os.path.join(sessions.HANDOFF_DIR, "abc.md"), "w") as f:
+        os.makedirs(handoff.HANDOFF_DIR)
+        with open(os.path.join(handoff.HANDOFF_DIR, "abc.md"), "w") as f:
             f.write("## Goal\nShip the session list")
-        with mock.patch.object(sessions, "claude_process", return_value={}):
-            output = run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"})
-            self.assertIn("Ship the session list", json.loads(output)["hookSpecificOutput"]["additionalContext"])
-            self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"}), "")
-            self.assertEqual(run_main(sessions, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")
-        self.assertEqual(os.listdir(sessions.HANDOFF_DIR), ["abc.restored.md"])
+        self.assertEqual(run_main(handoff, {"hook_event_name": "SessionStart", "source": "startup", "session_id": "abc"}), "")
+        output = run_main(handoff, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"})
+        self.assertIn("Ship the session list", json.loads(output)["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(run_main(handoff, {"hook_event_name": "SessionStart", "source": "compact", "session_id": "abc"}), "")
+        self.assertEqual(os.listdir(handoff.HANDOFF_DIR), ["abc.restored.md"])
+
+    def test_a_long_handoff_is_cut_with_a_pointer_and_unsafe_ids_are_ignored(self):
+        os.makedirs(handoff.HANDOFF_DIR)
+        with open(os.path.join(handoff.HANDOFF_DIR, "abc.md"), "w") as f:
+            f.write("x" * (handoff.LIMIT + 50))
+        self.assertEqual(run_main(handoff, {"source": "compact", "session_id": "../abc"}), "")
+        context = json.loads(run_main(handoff, {"source": "compact", "session_id": "abc"}))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("cut off", context)
+        self.assertLess(len(context), handoff.LIMIT + 400)
 
     def test_claim_and_release(self):
         self.status("boss", self.alive)
@@ -587,11 +598,14 @@ class SnapshotTests(unittest.TestCase):
             "merged as 6db44bbabcdef0123456789abcdef0123456789a",
             "https://github.com/NCSmit/notch-voice/pull/1",
             "1", "pr2", "yes please",
+            "Sources/NotchVoice/SessionStore.swift and apps/web/src/app/v2/page.tsx",
         ]
         for text in kept:
             self.assertEqual(snapshot.redact(text), text)
         for text in ("key sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "token=abc123", "Hunter2024!",
-                     "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldCB0b2tlbg=="):
+                     "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldCB0b2tlbg==",
+                     "aGVs/bG8gd29ybGQgdGhpcyBpcyBhIHNlY3JldCB0b2tlbg+/x==",
+                     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"):
             self.assertIn("[redacted]", snapshot.redact(text))
 
     def test_transcript_times_are_utc_all_year(self):
@@ -620,7 +634,7 @@ class SnapshotTests(unittest.TestCase):
         for session, status in statuses.items():
             with open(os.path.join(self.dir.name, f"{session}.json"), "w") as f:
                 json.dump(status, f)
-        with mock.patch.object(sessions, "is_open", side_effect=lambda status, now=None: status["state"] != "ended"), \
+        with mock.patch.object(sessions, "is_open", side_effect=lambda status, now=None, check_name=True: status["state"] != "ended"), \
                 redirect_stdout(io.StringIO()) as out:
             snapshot.sessions(argparse.Namespace(skip="me"))
         records = json.loads(out.getvalue())
@@ -638,7 +652,7 @@ class SnapshotTests(unittest.TestCase):
     def test_wait_reports_what_changed_or_times_out(self):
         rounds = iter([{"a": {"state": "working"}}, {"a": {"state": "working"}}, {"a": {"state": "idle", "title": "A"}},
                        {"a": {"state": "idle", "title": "A"}, "b": {"state": "waiting", "title": "B"}}])
-        with mock.patch.object(snapshot, "open_sessions", side_effect=lambda skip: next(rounds)), \
+        with mock.patch.object(snapshot, "open_sessions", side_effect=lambda skip, check_name: next(rounds)), \
                 mock.patch.object(snapshot.time, "sleep"), redirect_stdout(io.StringIO()) as out:
             snapshot.wait(mock.Mock(session="me", timeout=60))
         self.assertEqual([(e["session_id"], e["state"]) for e in json.loads(out.getvalue())], [("a", "idle"), ("b", "waiting")])

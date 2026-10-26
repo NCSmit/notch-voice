@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import notchvoice_sessions as status_files  # noqa: E402
 
 PROJECTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+HANDOFF_DIR = os.path.join(status_files.NOTCHVOICE_DIR, "handoffs")
 TAIL_BYTES = 3 * 1024 * 1024
 STUCK_SECONDS = 30 * 60
 HEAVY_TOKENS = 160_000
@@ -41,8 +42,8 @@ SECRETISH = [
     re.compile(r"\b(sk|pk|rk|ghp|gho|ghs|github_pat|xox[abpr]|AKIA|AIza|ya29)[-_A-Za-z0-9]{12,}"),
     re.compile(r"(?i)\b(password|passwd|token|secret|api[_ -]?key)\s*[:=]\s*\S+"),
 ]
-# A long opaque token on its own, not part of a path or a dotted name.
-LONG_TOKEN = re.compile(r"(?<![\w/.-])[A-Za-z0-9+_-]{32,}={0,2}(?![\w/.-])")
+# A long run of token characters. Whether it is a secret is decided by looks_secret().
+LONG_TOKEN = re.compile(r"(?<![\w/+=.-])[A-Za-z0-9+/=_.-]{32,}(?![\w/+=.-])")
 UUID = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 
@@ -97,8 +98,15 @@ def redact(text):
         return "[redacted]"
     for pattern in SECRETISH:
         text = pattern.sub("[redacted]", text)
-    # Session ids and commit hashes look like tokens but briefings need them.
-    return LONG_TOKEN.sub(lambda m: m.group(0) if UUID.fullmatch(m.group(0)) or COMMIT.fullmatch(m.group(0)) else "[redacted]", text)
+    return LONG_TOKEN.sub(lambda m: "[redacted]" if looks_secret(m.group(0)) else m.group(0), text)
+
+
+def looks_secret(token):
+    """Keys and encoded secrets mix upper case, lower case and digits. Paths, session ids and commit hashes, which
+    briefings need, don't, or start like a path."""
+    if UUID.fullmatch(token) or COMMIT.fullmatch(token) or token.startswith(("/", "~", ".", "www.")):
+        return False
+    return bool(re.search(r"[A-Z]", token) and re.search(r"[a-z]", token) and re.search(r"\d", token))
 
 
 def short(text, limit):
@@ -171,12 +179,12 @@ def summarize_transcript(path, updated=0.0, turns=4):
     }
 
 
-def open_sessions(skip):
+def open_sessions(skip, check_name=True):
     found = {}
     for path in sorted(glob.glob(os.path.join(status_files.SESSIONS_DIR, "*.json"))):
         session = os.path.basename(path)[:-5]
         status = status_files.read(path)
-        if session != skip and status_files.is_open(status):
+        if session != skip and status_files.is_open(status, check_name=check_name):
             found[session] = status
     return found
 
@@ -241,7 +249,7 @@ def claim(args):
     with open(temp, "w") as f:
         json.dump({"session_id": session, "since": time.time()}, f)
     os.replace(temp, status_files.ORCHESTRATOR_FILE)
-    result = {"orchestrator": session, "handoff_dir": status_files.HANDOFF_DIR}
+    result = {"orchestrator": session, "handoff_dir": HANDOFF_DIR}
     if previous and previous != session:
         result["replaced"] = previous
     print(json.dumps(result))
@@ -270,15 +278,16 @@ def changes(before, now):
 
 def wait(args):
     skip = args.session or this_session()
-    before = open_sessions(skip)
+    # This looks every 2 s for up to an hour, so it skips the process-name check, which would start a ps each time.
+    before = open_sessions(skip, check_name=False)
     deadline = time.time() + args.timeout
     while time.time() < deadline:
         time.sleep(2)
-        now = open_sessions(skip)
+        now = open_sessions(skip, check_name=False)
         events = changes(before, now)
         if events:
             time.sleep(4)  # let near-simultaneous finishes land in the same wake-up
-            events += changes(now, open_sessions(skip))
+            events += changes(now, open_sessions(skip, check_name=False))
             latest = {e["session_id"]: e for e in events}
             print(json.dumps(list(latest.values()), indent=1))
             return

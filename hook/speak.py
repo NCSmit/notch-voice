@@ -18,7 +18,7 @@ import tempfile
 try:
     from notchvoice_sessions import orchestrator
 except ImportError:  # installed without the sessions hook, so there is no orchestrator either
-    def orchestrator():
+    def orchestrator(check_name=True):
         return None
 
 HOME = os.path.expanduser("~")

@@ -72,7 +72,6 @@ final class SpeechInput {
                 self.onEnded(false)
             }
         }
-        newRequest()
         log.info("listening")
     }
 
@@ -90,7 +89,8 @@ final class SpeechInput {
         log.info("stopped listening")
     }
 
-    /// Starts a new request, so the transcript from here on holds only what is said from now.
+    /// Starts a new request, so the transcript from here on holds only what is said from now. Listening starts with
+    /// no request; whoever starts listening asks for the first one, so two never start back to back.
     func newRequest() {
         guard isRunning, let recognizer else { return }
         task?.cancel()
@@ -108,6 +108,7 @@ final class SpeechInput {
             let isFinal = result?.isFinal ?? false
             let ended = isFinal || error != nil
             let failed = error != nil
+            if let error { log.info("recognition request ended: \(error.localizedDescription, privacy: .public)") }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, current == self.generation else { return }

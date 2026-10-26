@@ -176,6 +176,8 @@ final class TalkController: ObservableObject {
     }
 
     private func heard(_ text: String, isFinal: Bool) {
+        // Recognition is working, so a later failure starts the retry delay afresh.
+        if !text.isEmpty { retryDelay = 0 }
         switch phase {
         case .waitingForPhrase:
             if let words = TalkPhrases.afterWakePhrase(in: text, name: preferences.wakeName) { beginCapture(.phrase, words: words) }

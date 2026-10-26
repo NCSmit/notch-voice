@@ -54,12 +54,13 @@ The helper script is `~/.claude/hooks/notchvoice_snapshot.py`, installed with No
 
 ## 2. Catch up
 
-Run these in parallel:
+Run all of these, in parallel. Each one feeds the briefing, so don't skip any:
 
 1. **`snapshot sessions`**. You get one record per open session, excluding you. Each has:
    - state, `name` (what Claude Code or the desktop app calls the session, when it has a name) and `title` (the
      first prompt seen). Use the name when you talk about a session.
    - `desktop_session_id`, the Claude desktop app's id for the session, when it runs there
+   - `pr` and `pr_from` for sessions outside the desktop app: the session's pull request and its checks
    - activity, the last few prompts and replies
    - context size, model and git branch
    - flags: stuck tool calls, repeated commands, large context
@@ -71,13 +72,12 @@ Run these in parallel:
      transcript tail at the record's `transcript_path`.
 3. **`~/.claude/orchestrator/notes.md`**, with the Read tool. These are your notes: environment, open threads, relays
    sent. On first use it doesn't exist yet; create it with the Write tool after the first briefing.
-4. **Pull requests.** Get each session's pull request and its checks without asking GitHub more than needed:
-   - **Sessions in the Claude desktop app** (records with a `desktop_session_id`): when you have
-     `mcp__ccd_pr__get_status`, call it with that id. The app answers from its own cache with the PR, its check
-     counts and failing check names, the review decision and the merge state. `mcp__ccd_session_mgmt__list_sessions`
-     also lists each desktop session's PR number and state.
-   - **Every other session**: `snapshot prs`. It gives the same shape, from one `gh pr view` per session. Without the
-     desktop app's tools, run `snapshot prs --all` to cover the desktop sessions too.
+4. **Pull requests of desktop sessions.** Records outside the desktop app already have theirs. For records with a
+   `desktop_session_id`:
+   - When you have `mcp__ccd_pr__get_status`, call it with that id for each one. The app answers from its own cache
+     with the PR, its check counts and failing check names, the review decision and the merge state, so this costs
+     nothing. `mcp__ccd_session_mgmt__list_sessions` also lists each desktop session's PR number and state.
+   - Without those tools, run `snapshot prs --all`. It gives the same shape, from one `gh pr view` per session.
    - `pr_from` says how sure that is. "opened by the session" is its own PR. "the folder's branch" only means the
      folder it runs in is on a branch with that PR, so say "its branch has PR 12", not "its PR".
    - Check PRs when you brief, not in a loop.

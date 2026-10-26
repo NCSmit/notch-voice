@@ -3,7 +3,8 @@
 
   notchvoice_snapshot.py sessions            one JSON record per open Claude Code session other than this one
                                              (NotchVoice status file plus a transcript tail): state, goal, recent
-                                             turns, context size, flags
+                                             turns, context size, flags, and the pull request of each session outside
+                                             the Claude desktop app
   notchvoice_snapshot.py learn [--days 7]    user prompts from recent transcripts across all projects, with likely
                                              corrections marked, for the learning loop
   notchvoice_snapshot.py prs [--all]         pull request status for open sessions outside the Claude desktop app
@@ -199,7 +200,10 @@ def open_sessions(skip, check_name=True):
 
 def sessions(args):
     out = []
-    for session_id, status in open_sessions(args.skip).items():
+    statuses = open_sessions(args.skip)
+    # Pull requests come along for sessions outside the desktop app, so a briefing never has to remember to ask.
+    prs_found = pull_requests(statuses, include_desktop=False)
+    for session_id, status in statuses.items():
         updated = float(status.get("updated") or 0)
         record = {
             "session_id": session_id,
@@ -215,6 +219,8 @@ def sessions(args):
             "transcript_path": status.get("transcript_path"),
         }
         record.update(status_files.registry(session_id, status))
+        if session_id in prs_found:
+            record["pr"], record["pr_from"] = prs_found[session_id]
         if status.get("transcript_path"):
             record.update(summarize_transcript(status["transcript_path"], updated))
             if record["interrupted"] and record["state"] != "idle":
@@ -310,29 +316,40 @@ def pull_request(target):
     }
 
 
-def prs(args):
+def pull_requests(statuses, include_desktop):
+    """{session_id: (pr, pr_from)} for the given open sessions. Sessions in the Claude desktop app are left out unless
+    include_desktop, because the app's own tools report theirs without asking GitHub."""
     chosen = {}
-    for session_id, status in open_sessions(args.skip).items():
-        found = status_files.registry(session_id, status)
-        if args.all or not found.get("desktop_session_id"):
+    for session_id, status in statuses.items():
+        if include_desktop or not status_files.registry(session_id, status).get("desktop_session_id"):
             opened = opened_pr(status["transcript_path"]) if status.get("transcript_path") else None
             # A session's folder isn't always the repo it works in, so a PR it opened beats its folder's branch.
-            chosen[session_id] = (status, found, ("url", opened) if opened else ("folder", status.get("cwd")))
-    targets = {target for _, _, target in chosen.values() if target[1]}
+            chosen[session_id] = ("url", opened) if opened else ("folder", status.get("cwd"))
+    targets = {target for target in chosen.values() if target[1]}
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         results = dict(zip(targets, pool.map(pull_request, targets)))
-    out = []
-    for session_id, (status, found, target) in chosen.items():
+    found = {}
+    for session_id, target in chosen.items():
         pr = results.get(target)
         if pr and target[0] == "folder" and pr["state"] != "open":
             pr = None  # a finished PR on the folder's branch is most likely left over from earlier work
+        found[session_id] = (pr, None if not target[1] else "opened by the session" if target[0] == "url" else "the folder's branch")
+    return found
+
+
+def prs(args):
+    statuses = open_sessions(args.skip)
+    out = []
+    for session_id, (pr, pr_from) in pull_requests(statuses, args.all).items():
+        status = statuses[session_id]
+        found = status_files.registry(session_id, status)
         out.append({
             "session_id": session_id,
             "name": found.get("name") or status.get("title"),
             "desktop_session_id": found.get("desktop_session_id"),
             "cwd": status.get("cwd"),
             "pr": pr,
-            "pr_from": None if not target[1] else "opened by the session" if target[0] == "url" else "the folder's branch",
+            "pr_from": pr_from,
         })
     print(json.dumps(out, indent=1))
 

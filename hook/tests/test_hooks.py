@@ -634,7 +634,8 @@ class SnapshotTests(unittest.TestCase):
             {"type": "user", "timestamp": "2026-10-26T10:01:00Z", "message": {"content": "[Request interrupted by user]"}},
         ])
         statuses = {
-            "busy": {"state": "working", "title": "Fix the login bug", "updated": 1793008830.0, "transcript_path": transcript},
+            "busy": {"state": "working", "title": "Fix the login bug", "updated": 1793008830.0, "transcript_path": transcript,
+                     "cwd": self.dir.name},
             "me": {"state": "idle", "updated": time.time()},
             "gone": {"state": "ended", "updated": time.time()},
         }
@@ -642,6 +643,7 @@ class SnapshotTests(unittest.TestCase):
             with open(os.path.join(self.dir.name, f"{session}.json"), "w") as f:
                 json.dump(status, f)
         with mock.patch.object(sessions, "is_open", side_effect=lambda status, now=None, check_name=True: status["state"] != "ended"), \
+                mock.patch.object(snapshot, "pull_request", return_value={"number": 7, "state": "open", "checks": {}}), \
                 redirect_stdout(io.StringIO()) as out:
             snapshot.sessions(argparse.Namespace(skip="me"))
         records = json.loads(out.getvalue())
@@ -649,6 +651,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual((records[0]["state"], records[0]["activity"], records[0]["interrupted"]), ("idle", "Interrupted", True))
         self.assertEqual(records[0]["recent_prompts"], ["Fix the login bug"])
         self.assertEqual(records[0]["model"], "claude-opus-5-5")
+        self.assertEqual(records[0]["pr"]["number"], 7)
 
     def test_wakes_when_a_session_finishes_or_needs_you_but_not_when_one_opens(self):
         before = {"a": {"state": "working"}}

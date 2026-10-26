@@ -61,3 +61,36 @@ struct TalkPolicyTests {
         #expect(TalkPolicy.decide(.hold, heard: "", sinceStart: TalkPolicy.longest, sinceLastWords: 0) == .nothingSaid)
     }
 }
+
+struct RequestTranscriptTests {
+    @Test func aPauseAfterTheWakePhraseKeepsWhatFollows() {
+        var transcript = RequestTranscript()
+        transcript.add("Hey", timing: nil)
+        transcript.add("Hey Jarvis", timing: nil)
+        transcript.add("Hey Jarvis.", timing: 8.3...8.9)
+        transcript.add("What", timing: nil)
+        transcript.add("What is the status?", timing: nil)
+        #expect(transcript.text == "Hey Jarvis. What is the status?")
+        #expect(TalkPhrases.afterWakePhrase(in: transcript.text, name: "Jarvis") == "What is the status?")
+    }
+
+    @Test func laterResultsForTheSameSpeechReplaceIt() {
+        var transcript = RequestTranscript()
+        transcript.add("Hey Jarvis.", timing: 8.3...8.9)
+        transcript.add("Hey Jarvis.", timing: 8.3...8.9)
+        transcript.add("What is the status?", timing: 10...11.5)
+        #expect(transcript.text == "Hey Jarvis. What is the status?")
+        transcript.add("Hey Jarvis, what is the status?", timing: 8.3...11.5)
+        #expect(transcript.text == "Hey Jarvis, what is the status?")
+    }
+
+    @Test func utterancesThatOnlyTouchAreBothKept() {
+        var transcript = RequestTranscript()
+        transcript.add("Hey Jarvis.", timing: 8.34...8.97)
+        transcript.add("Run the tests.", timing: 8.97...10.2)
+        #expect(transcript.text == "Hey Jarvis. Run the tests.")
+        #expect(transcript.heardWords)
+        transcript.add("", timing: nil)
+        #expect(transcript.heardWords)
+    }
+}

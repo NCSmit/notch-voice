@@ -95,6 +95,8 @@ Type `/orchestrator` in any Claude Code session to make it your orchestrator, th
 
 The orchestrator reads your sessions' transcripts the way any Claude Code session can. Its helper redacts obvious secrets, such as API keys, before passing anything on.
 
+The first time, Claude Code asks before the orchestrator runs its helper and before it writes its notes in `~/.claude/orchestrator/`. Allow both for good, so a briefing isn't held up by a prompt you can't see. NotchVoice doesn't allow these for you, because then any session could write notes that the orchestrator trusts.
+
 ## Regular Claude chats
 
 Chats in the Claude desktop app can be read aloud too. The installer adds a small local tool called `speak` to the desktop app, and NotchVoice asks Claude to call it at the end of each reply with a short spoken summary. It uses the same voice, glow, music ducking and mute switch as Claude Code.

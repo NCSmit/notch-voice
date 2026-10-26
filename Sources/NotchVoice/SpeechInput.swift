@@ -24,12 +24,19 @@ final class SpeechInput {
     var onEnded: (Bool) -> Void = { _ in }
 
     private(set) var isRunning = false
+    /// When the current request started taking in audio, which its word times count from.
+    private(set) var requestStart = Date()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let engine = AVAudioEngine()
     private let feed = RequestFeed()
     private var task: SFSpeechRecognitionTask?
     private var generation = 0
     private var transcript = RequestTranscript()
+
+    /// The words of the current request's ended utterances, with when each was said.
+    var words: [(text: String, at: Date)] {
+        transcript.words.map { ($0.text, requestStart.addingTimeInterval($0.start)) }
+    }
     private var configChanges: NSObjectProtocol?
 
     // These callbacks come on background threads, so none of them may be tied to the main actor; Swift stops the app
@@ -97,6 +104,7 @@ final class SpeechInput {
         generation += 1
         let current = generation
         transcript = RequestTranscript()
+        requestStart = Date()
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true
@@ -106,6 +114,7 @@ final class SpeechInput {
         task = recognizer.recognitionTask(with: request) { @Sendable [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let timing = result.flatMap { RequestTranscript.timing(of: $0.bestTranscription.segments) }
+            let words = timing == nil ? [] : RequestTranscript.words(of: result?.bestTranscription.segments ?? [])
             let isFinal = result?.isFinal ?? false
             let ended = isFinal || error != nil
             let failed = error != nil
@@ -114,7 +123,7 @@ final class SpeechInput {
                 MainActor.assumeIsolated {
                     guard let self, current == self.generation else { return }
                     if let text {
-                        self.transcript.add(text, timing: timing)
+                        self.transcript.add(text, timing: timing, words: words)
                         self.onText(self.transcript.text, isFinal)
                     }
                     // Handling the text may already have started the next request; this ending is then the old one's.
@@ -167,9 +176,16 @@ final class SpeechInput {
 /// utterances that ended are kept here in order, with the one in progress after them, and "Hey Jarvis", a pause and
 /// then the message still read as one.
 struct RequestTranscript {
+    struct Word: Equatable {
+        let text: String
+        /// When it was said, from the start of the request.
+        let start: TimeInterval
+    }
+
     private struct Utterance {
         let time: ClosedRange<TimeInterval>
         let text: String
+        let words: [Word]
     }
 
     private var ended: [Utterance] = []
@@ -180,6 +196,11 @@ struct RequestTranscript {
         (ended.map(\.text) + [inProgress]).filter { !$0.isEmpty }.joined(separator: " ")
     }
 
+    /// The words of the utterances that ended, in order.
+    var words: [Word] {
+        ended.flatMap(\.words)
+    }
+
     /// When the words of an ended utterance were said, from the start of the request. Nil while it is in progress,
     /// when its words have no times yet.
     static func timing(of segments: [SFTranscriptionSegment]) -> ClosedRange<TimeInterval>? {
@@ -187,8 +208,12 @@ struct RequestTranscript {
         return first.timestamp...max(first.timestamp, last.timestamp + last.duration)
     }
 
+    static func words(of segments: [SFTranscriptionSegment]) -> [Word] {
+        segments.map { Word(text: $0.substring, start: $0.timestamp) }
+    }
+
     /// Takes in one result. A later result for the same stretch of speech, such as the final one, replaces what it covers.
-    mutating func add(_ text: String, timing: ClosedRange<TimeInterval>?) {
+    mutating func add(_ text: String, timing: ClosedRange<TimeInterval>?, words: [Word] = []) {
         if !text.isEmpty { heardWords = true }
         guard let timing else {
             inProgress = text
@@ -196,7 +221,7 @@ struct RequestTranscript {
         }
         // Utterances that only touch at an end are separate ones.
         ended.removeAll { $0.time.lowerBound < timing.upperBound && timing.lowerBound < $0.time.upperBound }
-        ended.append(Utterance(time: timing, text: text))
+        ended.append(Utterance(time: timing, text: text, words: words))
         ended.sort { $0.time.lowerBound < $1.time.lowerBound }
         inProgress = ""
     }

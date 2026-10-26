@@ -32,10 +32,26 @@ enum TalkPhrases {
     /// A comma left over from "Hey Jarvis," goes, but the end keeps its punctuation, so a question stays one.
     static func message(from words: String) -> String? {
         let text = words.drop(while: { $0.isWhitespace || $0.isPunctuation }).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.contains(where: { $0.isLetter || $0.isNumber }) else { return nil }
-        let plain = text.lowercased().replacing(/[^\w\s]/, with: "")
-        if cancelWords.contains(where: { plain == $0 || plain.hasSuffix(" " + $0) }) { return nil }
+        guard text.contains(where: { $0.isLetter || $0.isNumber }), !endsWithCancelWord(text) else { return nil }
         return text
+    }
+
+    static func endsWithCancelWord(_ words: String) -> Bool {
+        let plain = words.lowercased().replacing(/[^\w\s]/, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return cancelWords.contains(where: { plain == $0 || plain.hasSuffix(" " + $0) })
+    }
+
+    /// When a message began, from words with the times they were said: the first word after the last "Hey <name>", or
+    /// the first word when there is no name to look for. Nil when no such word has a time yet.
+    static func messageStart(in words: [(text: String, at: Date)], afterWakePhrase name: String?) -> Date? {
+        guard let name else { return words.first?.at }
+        let plain = words.map { $0.text.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "'" || $0 == "-" } }
+        let nameWords = name.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let ends = plain.indices.filter { start in
+            ["hey", "hi"].contains(plain[start]) && Array(plain.dropFirst(start + 1).prefix(nameWords.count)) == nameWords
+        }
+        guard let last = ends.last, last + 1 + nameWords.count < words.count else { return nil }
+        return words[last + 1 + nameWords.count].at
     }
 }
 
@@ -55,6 +71,8 @@ enum TalkPolicy {
     }
 
     static let pause: TimeInterval = 1.8
+    /// A message that began more than this before Wispr Flow was listening has lost its first words there.
+    static let wisprHeadStart: TimeInterval = 0.15
     static let waitForWords: TimeInterval = 7
     static let longest: TimeInterval = 90
 
@@ -64,5 +82,18 @@ enum TalkPolicy {
         if trigger == .hold { return .keepListening }
         if !saidSomething { return sinceStart >= waitForWords ? .nothingSaid : .keepListening }
         return sinceLastWords >= pause ? .send : .keepListening
+    }
+
+    /// The words to send for a message Wispr Flow wrote out, and why Apple's transcript is sent instead, when it is:
+    /// Wispr Flow wrote nothing, or started listening `headStart` seconds into the message and so missed its start.
+    /// Either transcript ending with a cancel word sends nothing. With a wake name, only what follows the last
+    /// "Hey <name>" in Wispr Flow's text counts, the same as in Apple's.
+    static func wisprMessage(_ written: String, apple: String, headStart: TimeInterval, wakeName: String?) -> (words: String, appleBecause: String?) {
+        if written.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return (apple, "Wispr Flow wrote nothing") }
+        if headStart > wisprHeadStart {
+            return (apple, "the message began \(String(format: "%.2f", headStart)) s before Wispr Flow was listening")
+        }
+        if TalkPhrases.endsWithCancelWord(apple) { return (apple, "it ends with a cancel word") }
+        return (wakeName.flatMap { TalkPhrases.afterWakePhrase(in: written, name: $0) } ?? written, nil)
     }
 }

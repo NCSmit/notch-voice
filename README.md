@@ -109,11 +109,22 @@ Speak to your orchestrator without going to its window. Your words go to the ses
 - **Or use the talk shortcut.** Set it in settings, and choose whether you hold it while you speak and let go to send, or press it once to start and pause or press again to send.
 - **See and hear what's going on.** The notch shows your words as you speak, and a short sound marks the start and the send. Say "cancel" at the end, or click ✕, to stop without sending.
 - **Replies wait for you.** While you speak, a reply that's playing pauses, as it does when you dictate.
-- **On your Mac only.** Your words are recognised on this Mac, from its built-in microphone, so Bluetooth headphones stay in their high-quality mode. The first time, macOS asks to allow the microphone and speech recognition.
+- **On your Mac only.** Your words are recognised on this Mac, from its built-in microphone, so Bluetooth headphones stay in their high-quality mode. The first time, macOS asks to allow the microphone and speech recognition. If you'd rather have Wispr Flow write out your messages, see [below](#write-out-messages-with-wispr-flow).
 
 While **Listen for "Hey Jarvis"** is on and an orchestrator is open, the microphone stays on, and macOS shows its orange dot. With it off, the microphone is only used while you talk.
 
 Turning NotchVoice off stops all of this too: it stops listening, and the talk shortcut does nothing until you turn it back on.
+
+### Write out messages with Wispr Flow
+
+If you use [Wispr Flow](https://wisprflow.ai), it can write out your messages instead. Choose it under **Write out messages with** in settings. The choice only shows when Wispr Flow is installed, and Wispr Flow needs to be open.
+
+- **Wait for the sound.** NotchVoice still listens for "Hey Jarvis" and still decides when you've finished: a pause, letting go of the shortcut, or a second press. In between, Wispr Flow listens. It takes a moment to start, so the start sound plays once it's listening. Say "Hey Jarvis", wait for the sound, then speak.
+- **Never cut short.** If you started speaking before Wispr Flow was listening, if Wispr Flow is closed or already in use, or if its text doesn't arrive within 5 seconds, the message is sent as recognised on your Mac instead.
+- **NotchVoice holds the keyboard while you speak.** Wispr Flow pastes its text wherever the keyboard is, so NotchVoice gives it an invisible field of its own and hands the keyboard back as soon as the text arrives. Anything you type in the meantime goes nowhere. If you click into another app while you speak, NotchVoice takes the keyboard back for a moment when you finish, so the text can't land there.
+- **Only Wispr Flow's text is used.** NotchVoice takes the text only from Wispr Flow's own paste, so nothing you copied can end up in a message.
+
+Wispr Flow lists these messages in its history under the app you were in at the time.
 
 Anything that can run a command can also send the orchestrator a message, such as a Shortcut you start with "Hey Siri": `python3 ~/.claude/hooks/notchvoice_snapshot.py tell "Which session needs me?"`. Claude Code sessions can't. Since a message could come from anywhere on your Mac, the orchestrator answers questions straight away but reads anything else back to you, and waits for your yes, before it acts.
 
@@ -142,7 +153,7 @@ Click the cog in the notch to open settings. Changes apply to the next reply, wi
 - **Glow.** Choose from six colour themes. The notch lights up briefly to preview the one you pick.
 - **Permissions.** Turn permission requests in the notch on or off.
 - **Sessions.** Show or hide your sessions in the menu bar.
-- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, and set the talk shortcut and whether you hold or press it.
+- **Talk to the orchestrator.** Turn "Hey Jarvis" listening on or off, give it another name, set the talk shortcut and whether you hold or press it, and choose whether your Mac or Wispr Flow writes out your messages.
 - **Mute shortcut.** Set a keyboard shortcut that turns voice replies on or off from anywhere.
 
 <p align="center">

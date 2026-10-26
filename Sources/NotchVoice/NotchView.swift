@@ -287,6 +287,7 @@ struct TalkCard: View {
     private var symbol: String {
         switch card {
         case .listening: "mic.fill"
+        case .writing: "ellipsis"
         case .sending: "paperplane.fill"
         case .sent: "checkmark"
         case .done(_, let isError): isError ? "exclamationmark" : "xmark"
@@ -296,6 +297,7 @@ struct TalkCard: View {
     private var title: String {
         switch card {
         case .listening(let words, _): words.isEmpty ? "Listening…" : words
+        case .writing(let words): words.isEmpty ? "Your message" : words
         case .sending(let words): words
         case .sent: "Sent to the orchestrator"
         case .done(let message, _): message
@@ -305,6 +307,7 @@ struct TalkCard: View {
     private var detail: String {
         switch card {
         case .listening(_, let hint): hint
+        case .writing: "Wispr Flow is writing it out…"
         case .sending: "Sending to the orchestrator…"
         case .sent: "It will answer out loud"
         case .done: "Nothing was sent"

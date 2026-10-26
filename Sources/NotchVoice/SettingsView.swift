@@ -35,14 +35,17 @@ final class SettingsWindowController {
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        let available = (NSScreen.main?.visibleFrame.height ?? SettingsView.size.height) - 24
-        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(SettingsView.size.height, available)))
+        let height = SettingsView.size.height + (preferences.hasWisprFlow ? SettingsView.wisprFlowHeight : 0)
+        let available = (NSScreen.main?.visibleFrame.height ?? height) - 24
+        window.setContentSize(CGSize(width: SettingsView.size.width, height: min(height, available)))
         return window
     }
 }
 
 struct SettingsView: View {
     static let size = CGSize(width: 470, height: 1303)
+    /// The room the Wispr Flow row and its longer footer take, when Wispr Flow is installed.
+    static let wisprFlowHeight: CGFloat = 52
     private static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent")!
 
     @ObservedObject var voice: VoiceController
@@ -137,10 +140,16 @@ struct SettingsView: View {
                         Text("Holding it down").tag(TalkMode.hold)
                         Text("Pressing it to start").tag(TalkMode.press)
                     }
+                    if preferences.hasWisprFlow {
+                        Picker("Write out messages with", selection: transcriber) {
+                            Text("Apple (on this Mac)").tag(Transcriber.apple)
+                            Text("Wispr Flow").tag(Transcriber.wisprFlow)
+                        }
+                    }
                 } header: {
                     Text("Talk to the orchestrator")
                 } footer: {
-                    Text("Say \u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D} or use the shortcut, then speak to the session where you ran /orchestrator. Your words are recognised on this Mac. While listening is on and an orchestrator is open, the microphone stays on.")
+                    Text(talkFooter)
                 }
                 .onAppear { wakeNameDraft = preferences.wakeName }
                 Section("General") {
@@ -290,6 +299,19 @@ struct SettingsView: View {
 
     private var talkMode: Binding<TalkMode> {
         Binding(get: { preferences.talkMode }, set: { preferences.setTalkMode($0) })
+    }
+
+    private var transcriber: Binding<Transcriber> {
+        Binding(get: { preferences.transcriber }, set: { preferences.setTranscriber($0) })
+    }
+
+    private var talkFooter: String {
+        let phrase = "\u{201C}\(TalkPhrases.wakePhrase(preferences.wakeName))\u{201D}"
+        let microphone = "While listening is on and an orchestrator is open, the microphone stays on."
+        guard preferences.hasWisprFlow, preferences.transcriber == .wisprFlow else {
+            return "Say \(phrase) or use the shortcut, then speak to the session where you ran /orchestrator. Your words are recognised on this Mac. \(microphone)"
+        }
+        return "Say \(phrase) or use the shortcut, wait for the sound, then speak to the session where you ran /orchestrator. Wispr Flow writes out your message, and NotchVoice keeps the keyboard until it\u{2019}s done. \(microphone)"
     }
 
     private func saveWakeName() {
